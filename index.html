@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>पेड क्विज़ - पेशेवर अनुभव</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #1e3c72, #2a5298);
+            color: #ffffff;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+            text-align: center;
+        }
+        .container {
+            background: rgba(255, 255, 255, 0.1);
+            padding: 30px;
+            border-radius: 15px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+            backdrop-filter: blur(10px);
+            width: 90%;
+            max-width: 500px;
+        }
+        h1 {
+            color: #ffcc00;
+            font-size: 2.5em;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.5);
+        }
+        .qr {
+            margin: 20px 0;
+        }
+        .qr img {
+            max-width: 150px;
+            border: 2px solid #ffcc00;
+            border-radius: 10px;
+        }
+        .form-group {
+            margin: 15px 0;
+        }
+        input {
+            width: 80%;
+            padding: 12px;
+            border: none;
+            border-radius: 25px;
+            background: rgba(255, 255, 255, 0.2);
+            color: #fff;
+            font-size: 1em;
+            outline: none;
+            text-align: center;
+        }
+        input::placeholder {
+            color: #ddd;
+        }
+        button {
+            width: 80%;
+            padding: 12px;
+            border: none;
+            border-radius: 25px;
+            background: #ffcc00;
+            color: #1e3c72;
+            font-size: 1.2em;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background 0.3s, transform 0.2s;
+        }
+        button:hover {
+            background: #e6b800;
+            transform: scale(1.05);
+        }
+        .message {
+            margin-top: 10px;
+            font-size: 1.1em;
+            color: #ff4444;
+        }
+        a {
+            color: #ffcc00;
+            text-decoration: none;
+            font-weight: bold;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>पेड क्विज़</h1>
+        <div class="qr"><img src="{{ qr_code_data }}" alt="QR कोड"></div>
+        <form method="post" action="/submit_payment">
+            <div class="form-group">
+                <input type="text" name="user_id" placeholder="ईमेल या फोन नंबर" required>
+            </div>
+            <div class="form-group">
+                <input type="number" name="amount" value="49" min="29" max="99" placeholder="राशि (₹)">
+            </div>
+            <button type="submit">पेमेंट सबमिट करें</button>
+        </form>
+        <p><a href="{{ AMAZON_PAY_QR_LINK }}" target="_blank">UPI लिंक के लिए यहाँ क्लिक करें</a></p>
+        <div class="message" id="message"></div>
+    </div>
+    <script>
+        document.querySelector('form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            const message = document.getElementById('message');
+            fetch('/submit_payment', {
+                method: 'POST',
+                body: new FormData(this)
+            })
+            .then(response => response.json())
+            .then(data => {
+                message.textContent = data.message;
+                if (!data.success) message.style.color = '#ff4444';
+                else message.style.color = '#00cc00';
+            })
+            .catch(error => {
+                message.textContent = 'त्रुटि: ' + error;
+                message.style.color = '#ff4444';
+            });
+        });
+    </script>
+</body>
+</html>
