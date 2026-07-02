@@ -1,47 +1,54 @@
 import os
+import asyncio
 import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, PollAnswerHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
 logging.basicConfig(level=logging.INFO)
 
-# ====== राजस्थान GK - 20 सवाल ======
-QUESTIONS = [
-    {"question": "राजस्थान की राजधानी क्या है?", "options": ["जयपुर", "जोधपुर", "उदयपुर", "कोटा"], "correct": 0, "explanation": "जयपुर राजस्थान की राजधानी है, जिसे 'गुलाबी शहर' भी कहते हैं।"},
-    {"question": "राजस्थान का सबसे बड़ा जिला (क्षेत्रफल) कौन सा है?", "options": ["जोधपुर", "जैसलमेर", "बीकानेर", "बाड़मेर"], "correct": 1, "explanation": "जैसलमेर सबसे बड़ा जिला है (38,401 वर्ग किमी)।"},
-    {"question": "राजस्थान का सबसे लंबा नदी कौन सी है?", "options": ["चम्बल", "बनास", "लूनी", "माही"], "correct": 0, "explanation": "चम्बल नदी राजस्थान की सबसे लंबी नदी है (966 किमी)।"},
-    {"question": "थार मरुस्थल को किस नाम से भी जानते हैं?", "options": ["सहारा", "गोबी", "महान भारतीय मरुस्थल", "कालाहारी"], "correct": 2, "explanation": "थार को 'महान भारतीय मरुस्थल' (Great Indian Desert) कहते हैं।"},
-    {"question": "राजस्थान में कुल कितने जिले हैं (2024)?", "options": ["33", "41", "50", "36"], "correct": 2, "explanation": "2023 में 17 नए जिले बनाकर कुल 50 जिले हो गए।"},
-    {"question": "अरावली पर्वतमाला की सबसे ऊंची चोटी कौन सी है?", "options": ["सेर", "गुरु शिखर", "जरगा", "रघुनाथगढ़"], "correct": 1, "explanation": "गुरु शिखर (1722 मीटर) माउंट आबू में है।"},
-    {"question": "राजस्थान का सबसे बड़ा झील कौन सी है?", "options": ["पुष्कर", "सांभर", "फतहसागर", "जयसमंद"], "correct": 1, "explanation": "सांभर झील सबसे बड़ी खारे पानी की झील है।"},
-    {"question": "कुम्भलगढ़ दुर्ग किसने बनवाया?", "options": ["राणा कुम्भा", "राणा सांगा", "महाराणा प्रताप", "राणा हम्मीर"], "correct": 0, "explanation": "राणा कुम्भा ने 15वीं सदी में कुम्भलगढ़ बनवाया।"},
-    {"question": "हवा महल किस शहर में है?", "options": ["जोधपुर", "उदयपुर", "जयपुर", "कोटा"], "correct": 2, "explanation": "हवा महल जयपुर में स्थित है, महाराजा सवाई प्रताप सिंह ने बनवाया।"},
-    {"question": "राजस्थान का राज्य पक्षी कौन सा है?", "options": ["मोर", "बाज", "गोडावण", "तोता"], "correct": 2, "explanation": "गोडावण (Great Indian Bustard) राजस्थान का राज्य पक्षी है।"},
-    {"question": "राणा कुम्भा का जन्म कहां हुआ?", "options": ["चित्तौड़गढ़", "कुम्भलगढ़", "उदयपुर", "केलवाड़ा"], "correct": 0, "explanation": "राणा कुम्भा का जन्म चित्तौड़गढ़ में हुआ था।"},
-    {"question": "मेवाड़ का संस्थापक कौन था?", "options": ["बप्पा रावल", "राणा हम्मीर", "राणा कुम्भा", "राणा सांगा"], "correct": 0, "explanation": "बप्पा रावल (8वीं सदी) को मेवाड़ का संस्थापक माना जाता है।"},
-    {"question": "राजस्थान दिवस कब मनाया जाता है?", "options": ["1 नवंबर", "30 मार्च", "26 जनवरी", "15 अगस्त"], "correct": 1, "explanation": "30 मार्च 1949 को राजस्थान राज्य बना, इसी दिन को राजस्थान दिवस मनाते हैं।"},
-    {"question": "दिलवाड़ा जैन मंदिर कहां है?", "options": ["जयपुर", "माउंट आबू", "जोधपुर", "राजसमंद"], "correct": 1, "explanation": "दिलवाड़ा मंदिर माउंट आबू में स्थित प्रसिद्ध जैन मंदिर है।"},
-    {"question": "राजस्थान का पहला निजी वन्यजीव अभ्यारण्य कौन सा है?", "options": ["रणथंभोर", "सरिस्का", "तलछापर", "भंसरोगढ़"], "correct": 2, "explanation": "तलछापर (अलवर) राजस्थान का पहला निजी वन्यजीव अभ्यारण्य है।"},
-    {"question": "मेहरानगढ़ दुर्ग किस शहर में है?", "options": ["जयपुर", "जोधपुर", "बीकानेर", "जैसलमेर"], "correct": 1, "explanation": "मेहरानगढ़ दुर्ग जोधपुर में है, राव जोधा ने बनवाया।"},
-    {"question": "राजस्थान की सबसे ऊंची चोटी कौन सी है?", "options": ["गुरु शिखर", "सेर", "जरगा", "रघुनाथगढ़"], "correct": 0, "explanation": "गुरु शिखर (1722 मीटर) राजस्थान की सबसे ऊंची चोटी है।"},
-    {"question": "पुष्कर मेला किस नदी के किनारे लगता है?", "options": ["बनास", "चम्बल", "पुष्कर नदी", "लूनी"], "correct": 2, "explanation": "पुष्कर मेला पुष्कर नदी के किनारे कार्तिक पूर्णिमा पर लगता है।"},
-    {"question": "जवाहर सागर बांध किस नदी पर बना है?", "options": ["बनास", "चम्बल", "लूनी", "माही"], "correct": 1, "explanation": "जवाहर सागर बांध चम्बल नदी पर कोटा में बना है।"},
-    {"question": "राजस्थान का राज्य खनिज कौन सा है?", "options": ["तांबा", "लोहा", "मार्बल", "सोना"], "correct": 2, "explanation": "मार्बल राजस्थान का राज्य खनिज है, मकराना मार्बल विश्व प्रसिद्ध है।"},
-]
+QUIZZES = {
+    "🇮🇳 सामान्य ज्ञान": [
+        {"question": "भारत की राजधानी क्या है?", "options": ["मुंबई", "नई दिल्ली", "कोलकाता", "चेन्नई"], "correct": 1, "explanation": "नई दिल्ली भारत की राजधानी है।"},
+        {"question": "भारत का राष्ट्रीय पशु कौन सा है?", "options": ["शेर", "हाथी", "बाघ", "मोर"], "correct": 2, "explanation": "बाघ भारत का राष्ट्रीय पशु है।"},
+        {"question": "ताजमहल किसने बनवाया?", "options": ["अकबर", "शाहजहां", "जहांगीर", "औरंगजेब"], "correct": 1, "explanation": "शाहजहां ने ताजमहल बनवाया।"},
+        {"question": "भारत का संविधान कब लागू हुआ?", "options": ["15 अगस्त 1947", "26 जनवरी 1950", "26 नवंबर 1949", "2 अक्टूबर 1950"], "correct": 1, "explanation": "26 जनवरी 1950 को गणतंत्र दिवस!"},
+        {"question": "भारत का सबसे बड़ा राज्य?", "options": ["मध्य प्रदेश", "महाराष्ट्र", "राजस्थान", "उत्तर प्रदेश"], "correct": 2, "explanation": "राजस्थान सबसे बड़ा राज्य है।"},
+    ],
+    "💻 टेक्नोलॉजी": [
+        {"question": "Python किसने बनाया?", "options": ["Dennis Ritchie", "James Gosling", "Guido van Rossum", "Bjarne Stroustrup"], "correct": 2, "explanation": "Guido van Rossum ने 1991 में Python बनाया।"},
+        {"question": "HTML का फुल फॉर्म?", "options": ["Hyper Text Markup Language", "High Tech Modern Language", "Hyper Transfer Markup Language", "Home Tool Markup Language"], "correct": 0, "explanation": "HTML = Hyper Text Markup Language।"},
+        {"question": "AI का फुल फॉर्म?", "options": ["Artificial Intelligence", "Auto Intelligence", "Advanced Information", "Applied Internet"], "correct": 0, "explanation": "AI = Artificial Intelligence।"},
+        {"question": "1 GB में कितने MB?", "options": ["100 MB", "500 MB", "1024 MB", "1000 MB"], "correct": 2, "explanation": "1 GB = 1024 MB।"},
+        {"question": "दुनिया की पहली प्रोग्रामिंग भाषा?", "options": ["COBOL", "Fortran", "BASIC", "Assembly"], "correct": 1, "explanation": "Fortran (1957) पहली भाषा।"},
+    ],
+    "🎬 बॉलीवुड": [
+        {"question": "शाहरुख की पहली फिल्म?", "options": ["Baazigar", "Deewana", "Darr", "Kabhi Haan Kabhi Naa"], "correct": 1, "explanation": "Deewana (1992)।"},
+        {"question": "दंगल में आमिर किसका रोल?", "options": ["बॉक्सर", "पहलवान", "क्रिकेटर", "सैनिक"], "correct": 1, "explanation": "महावीर सिंह फोगाट।"},
+        {"question": "तीन खान कौन हैं?", "options": ["सलमान, शाहरुख, आमिर", "सलमान, अक्षय, रणबीर", "शाहरुख, आमिर, ऋतिक", "सलमान, शाहरुख, ऋतिक"], "correct": 0, "explanation": "सलमान, शाहरुख, आमिर।"},
+        {"question": "भारत की पहली टॉकी फिल्म?", "options": ["Raja Harishchandra", "Alam Ara", "Mother India", "Mughal-e-Azam"], "correct": 1, "explanation": "Alam Ara (1931)।"},
+        {"question": "पुष्पा में हीरो कौन?", "options": ["प्रभास", "अल्लू अर्जुन", "राम चरण", "जूनियर एनटीआर"], "correct": 1, "explanation": "अल्लू अर्जुन।"},
+    ],
+    "⚽ क्रिकेट": [
+        {"question": "भारत ने पहला विश्व कप कब जीता?", "options": ["1983", "1987", "1992", "1996"], "correct": 0, "explanation": "1983 कपिल देव।"},
+        {"question": "सचिन के कितने ODI शतक?", "options": ["49", "51", "45", "55"], "correct": 0, "explanation": "49 शतक।"},
+        {"question": "IPL में सबसे ज़्यादा जीतने वाली टीम?", "options": ["CSK", "MI", "KKR", "RCB"], "correct": 1, "explanation": "MI - 5 बार।"},
+        {"question": "विराट कोहली की जन्मतिथि?", "options": ["5 नवंबर 1988", "5 दिसंबर 1988", "5 नवंबर 1989", "5 दिसंबर 1989"], "correct": 0, "explanation": "5 नवंबर 1988।"},
+        {"question": "एक ओवर में कितनी गेंदें?", "options": ["4", "5", "6", "8"], "correct": 2, "explanation": "6 गेंदें।"},
+    ],
+}
 
 user_data = {}
 
 def get_main_menu():
     return ReplyKeyboardMarkup(
-        [["🎮 क्विज़ शुरू करो", "📊 मेरा स्कोर"], ["🔄 रीसेट"]],
+        [["🎮 नया क्विज़", "📊 मेरा स्कोर"], ["🔄 रीसेट"]],
         resize_keyboard=True
     )
 
-# ====== START ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     uid = user.id
-    user_data[uid] = {"score": 0, "total": 0, "qi": 0, "waiting": False, "chat_id": update.effective_chat.id}
+    user_data[uid] = {"score": 0, "total": 0, "cat": None, "qi": 0, "waiting": False, "chat_id": update.effective_chat.id}
     text = f"""
 ╔══════════════════════════╗
 ║   🏆 QUIZ CHAMPION 🏆    ║
@@ -49,43 +56,60 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 👤 स्वागत है {user.first_name} जी!
 
-📌 विषय: *राजस्थान GK*
-📝 कुल सवाल: *{len(QUESTIONS)}*
+📂 {len(QUIZZES)} कैटेगरी
+📝 कुल {sum(len(q) for q in QUIZZES.values())} सवाल
 
 ✅ सही = हरा रंग + उछलते आइकन
 ❌ गलत = लाल रंग
 
 ━━━━━━━━━━━━━━━━━━━━
-👆 "क्विज़ शुरू करो" दबाओ!
+👆 "नया क्विज़" दबाओ!
 """
-    await update.message.reply_text(text, reply_markup=get_main_menu(), parse_mode="Markdown")
+    await update.message.reply_text(text, reply_markup=get_main_menu())
 
-# ====== क्विज़ शुरू करो ======
-async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    user_data[uid] = {"score": 0, "total": 0, "qi": 0, "waiting": False, "chat_id": update.effective_chat.id}
-    await send_poll(context, uid, 0)
+async def new_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = "📂 *कैटेगरी चुनो:*\n\n"
+    for cat, qs in QUIZZES.items():
+        text += f"  {cat} — {len(qs)} सवाल\n"
+    text += "\n👇 नीचे से चुनो:"
+    buttons = [[InlineKeyboardButton(cat, callback_data=f"cat_{cat}")] for cat in QUIZZES]
+    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
-# ====== POLL भेजो ======
-async def send_poll(context, uid, qi):
-    if qi >= len(QUESTIONS):
-        await show_result(context, uid)
+async def category_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    if not query.data.startswith("cat_"):
         return
+    cat = query.data[4:]
+    ud = user_data[uid]
+    ud["cat"] = cat
+    ud["score"] = 0
+    ud["total"] = 0
+    ud["qi"] = 0
+    ud["chat_id"] = query.message.chat_id
+    ud["waiting"] = False
 
-    q = QUESTIONS[qi]
+    await query.message.edit_text(f"📌 *{cat}* चुना!\n\n⏳ शुरू हो रहा है...", parse_mode="Markdown")
+    await asyncio.sleep(1)
+    await send_native_poll(context, uid, cat, 0)
+
+async def send_native_poll(context, uid, cat, qi):
+    q = QUIZZES[cat][qi]
     ud = user_data[uid]
     ud["qi"] = qi
     ud["waiting"] = True
     chat_id = ud["chat_id"]
-    total = len(QUESTIONS)
+    total = len(QUIZZES[cat])
     bar = "🟩" * (qi + 1) + "⬜" * (total - qi - 1)
 
     await context.bot.send_message(
         chat_id=chat_id,
-        text=f"📌 *राजस्थान GK*\n{bar}  सवाल {qi+1}/{total}",
+        text=f"📌 *{cat}*\n{bar}  सवाल {qi+1}/{total}",
         parse_mode="Markdown"
     )
 
+    # 🎯 यही Native Quiz Poll बनाता है!
     await context.bot.send_poll(
         chat_id=chat_id,
         question=q["question"],
@@ -97,7 +121,6 @@ async def send_poll(context, uid, qi):
         explanation_parse_mode="Markdown"
     )
 
-# ====== जवाब आया ======
 async def poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     answer = update.poll_answer
     uid = answer.user.id
@@ -106,8 +129,9 @@ async def poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     ud = user_data[uid]
     ud["waiting"] = False
+    cat = ud["cat"]
     qi = ud["qi"]
-    q = QUESTIONS[qi]
+    q = QUIZZES[cat][qi]
     chat_id = ud["chat_id"]
 
     chosen = answer.option_ids[0]
@@ -115,96 +139,72 @@ async def poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ud["score"] += 1
     ud["total"] += 1
 
-    # अगला सवाल बटन या रिजल्ट
-    if qi + 1 < len(QUESTIONS):
-        buttons = [[InlineKeyboardButton("⏭ अगला सवाल", callback_data="next_q")]]
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=f"📊 स्कोर: *{ud['score']}/{ud['total']}*\n\n⏭ अगला सवाल देखने के लिए बटन दबाओ:",
-            reply_markup=InlineKeyboardMarkup(buttons),
-            parse_mode="Markdown"
-        )
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"📊 स्कोर: *{ud['score']}/{ud['total']}*",
+        parse_mode="Markdown"
+    )
+
+    if qi + 1 < len(QUIZZES[cat]):
+        await asyncio.sleep(2)
+        await send_native_poll(context, uid, cat, qi + 1)
     else:
-        await show_result(context, uid)
+        await asyncio.sleep(1)
+        await show_result(context, uid, cat)
 
-# ====== अगला सवाल बटन ======
-async def next_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    uid = query.from_user.id
-    ud = user_data[uid]
-    await query.message.delete()
-    await send_poll(context, uid, ud["qi"] + 1)
-
-# ====== रिजल्ट ======
-async def show_result(context, uid):
+async def show_result(context, uid, cat):
     ud = user_data[uid]
     score = ud["score"]
-    total = len(QUESTIONS)
+    total = len(QUIZZES[cat])
     percent = (score / total) * 100
     chat_id = ud["chat_id"]
 
-    if percent == 100: grade, stars = "🌟 परफेक्ट! शानदार!", "⭐⭐⭐⭐⭐"
+    if percent == 100: grade, stars = "🌟 परफेक्ट!", "⭐⭐⭐⭐⭐"
     elif percent >= 80: grade, stars = "🏆 बहुत बढ़िया!", "⭐⭐⭐⭐"
-    elif percent >= 60: grade, stars = "👍 अच्छा है!", "⭐⭐⭐"
+    elif percent >= 60: grade, stars = "👍 अच्छा!", "⭐⭐⭐"
     elif percent >= 40: grade, stars = "😐 ठीक है", "⭐⭐"
-    else: grade, stars = "💪 फिर कोशिश करो!", "⭐"
+    else: grade, stars = "💪 फिर कोशिश!", "⭐"
 
     text = f"""
 ╔══════════════════════════╗
 ║      🏆 रिजल्ट 🏆        ║
 ╚══════════════════════════╝
 
-📌 विषय: *राजस्थान GK*
+📌 कैटेगरी: *{cat}*
 📊 स्कोर: *{score}/{total}*
 📈 प्रतिशत: *{percent:.0f}%*
-
 {stars}
 🏅 *{grade}*
 
-━━━━━━━━━━━━━━━━━━━━
-🔄 दोबारा खेलो → "क्विज़ शुरू करो"
+🔄 दोबारा खेलो → "नया क्विज़"
 """
     await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=get_main_menu(), parse_mode="Markdown")
 
-# ====== स्कोर ======
 async def show_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     ud = user_data.get(uid, {"score": 0, "total": 0})
-    text = f"""
-╔══════════════════════════╗
-║     📊 मेरा स्कोर        ║
-╚══════════════════════════╝
+    await update.message.reply_text(f"📊 स्कोर: *{ud.get('score',0)}/{ud.get('total',0)}*", reply_markup=get_main_menu(), parse_mode="Markdown")
 
-✅ सही: *{ud.get('score', 0)}*
-📝 कुल: *{ud.get('total', 0)}*
-📝 बाकी: *{len(QUESTIONS) - ud.get('total', 0)}*
-"""
-    await update.message.reply_text(text, parse_mode="Markdown")
-
-# ====== रीसेट ======
 async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
-    user_data[uid] = {"score": 0, "total": 0, "qi": 0, "waiting": False, "chat_id": update.effective_chat.id}
-    await update.message.reply_text("🔄 *रीसेट हो गया!*\n\n🎮 क्विज़ शुरू करो!", parse_mode="Markdown")
+    user_data[uid] = {"score": 0, "total": 0, "cat": None, "qi": 0, "waiting": False, "chat_id": update.effective_chat.id}
+    await update.message.reply_text("🔄 रीसेट हो गया!", reply_markup=get_main_menu(), parse_mode="Markdown")
 
-# ====== मेनू बटन ======
 async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     t = update.message.text
-    if t == "🎮 क्विज़ शुरू करो": await start_quiz(update, context)
+    if t == "🎮 नया क्विज़": await new_quiz(update, context)
     elif t == "📊 मेरा स्कोर": await show_score(update, context)
     elif t == "🔄 रीसेट": await reset_cmd(update, context)
 
-# ====== मेन ======
 def main():
     TOKEN = os.environ.get("BOT_TOKEN")
     if not TOKEN:
         print("❌ BOT_TOKEN नहीं मिला!")
         return
-    print("🚀 राजस्थान GK Quiz शुरू हो रहा है...")
+    print("🚀 NATIVE QUIZ BOT शुरू हो रहा है...")
     app = Application.builder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(next_question, pattern="^next_q$"))
+    app.add_handler(CallbackQueryHandler(category_handler))
     app.add_handler(PollAnswerHandler(poll_answer))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
     print("✅ बॉट चल रहा है!")
