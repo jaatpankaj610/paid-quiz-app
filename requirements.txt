@@ -1,2 +1,2 @@
 python-telegram-bot==20.7
-# quiz bot v3
+# clean minimal poll v5
