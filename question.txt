@@ -1,17 +1,214 @@
-भारत की राजधानी कौन सी है?
-मुंबई
-*नई दिल्ली
-चेन्नई
-कोलकाता
+import os
+import logging
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, PollAnswerHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 
-सबसे बड़ा ग्रह कौन सा है?
-पृथ्वी
-*बृहस्पति
-शुक्र
-मंगल
+logging.basicConfig(level=logging.INFO)
 
-भारत का राष्ट्रीय पशु कौन सा है?
-शेर
-*बाघ
-हाथी
-गाय
+# ====== राजस्थान GK - 20 सवाल ======
+QUESTIONS = [
+    {"question": "राजस्थान की राजधानी क्या है?", "options": ["जयपुर", "जोधपुर", "उदयपुर", "कोटा"], "correct": 0, "explanation": "जयपुर राजस्थान की राजधानी है, जिसे 'गुलाबी शहर' भी कहते हैं।"},
+    {"question": "राजस्थान का सबसे बड़ा जिला (क्षेत्रफल) कौन सा है?", "options": ["जोधपुर", "जैसलमेर", "बीकानेर", "बाड़मेर"], "correct": 1, "explanation": "जैसलमेर सबसे बड़ा जिला है (38,401 वर्ग किमी)।"},
+    {"question": "राजस्थान का सबसे लंबा नदी कौन सी है?", "options": ["चम्बल", "बनास", "लूनी", "माही"], "correct": 0, "explanation": "चम्बल नदी राजस्थान की सबसे लंबी नदी है (966 किमी)।"},
+    {"question": "थार मरुस्थल को किस नाम से भी जानते हैं?", "options": ["सहारा", "गोबी", "महान भारतीय मरुस्थल", "कालाहारी"], "correct": 2, "explanation": "थार को 'महान भारतीय मरुस्थल' (Great Indian Desert) कहते हैं।"},
+    {"question": "राजस्थान में कुल कितने जिले हैं (2024)?", "options": ["33", "41", "50", "36"], "correct": 2, "explanation": "2023 में 17 नए जिले बनाकर कुल 50 जिले हो गए।"},
+    {"question": "अरावली पर्वतमाला की सबसे ऊंची चोटी कौन सी है?", "options": ["सेर", "गुरु शिखर", "जरगा", "रघुनाथगढ़"], "correct": 1, "explanation": "गुरु शिखर (1722 मीटर) माउंट आबू में है।"},
+    {"question": "राजस्थान का सबसे बड़ा झील कौन सी है?", "options": ["पुष्कर", "सांभर", "फतहसागर", "जयसमंद"], "correct": 1, "explanation": "सांभर झील सबसे बड़ी खारे पानी की झील है।"},
+    {"question": "कुम्भलगढ़ दुर्ग किसने बनवाया?", "options": ["राणा कुम्भा", "राणा सांगा", "महाराणा प्रताप", "राणा हम्मीर"], "correct": 0, "explanation": "राणा कुम्भा ने 15वीं सदी में कुम्भलगढ़ बनवाया।"},
+    {"question": "हवा महल किस शहर में है?", "options": ["जोधपुर", "उदयपुर", "जयपुर", "कोटा"], "correct": 2, "explanation": "हवा महल जयपुर में स्थित है, महाराजा सवाई प्रताप सिंह ने बनवाया।"},
+    {"question": "राजस्थान का राज्य पक्षी कौन सा है?", "options": ["मोर", "बाज", "गोडावण", "तोता"], "correct": 2, "explanation": "गोडावण (Great Indian Bustard) राजस्थान का राज्य पक्षी है।"},
+    {"question": "राणा कुम्भा का जन्म कहां हुआ?", "options": ["चित्तौड़गढ़", "कुम्भलगढ़", "उदयपुर", "केलवाड़ा"], "correct": 0, "explanation": "राणा कुम्भा का जन्म चित्तौड़गढ़ में हुआ था।"},
+    {"question": "मेवाड़ का संस्थापक कौन था?", "options": ["बप्पा रावल", "राणा हम्मीर", "राणा कुम्भा", "राणा सांगा"], "correct": 0, "explanation": "बप्पा रावल (8वीं सदी) को मेवाड़ का संस्थापक माना जाता है।"},
+    {"question": "राजस्थान दिवस कब मनाया जाता है?", "options": ["1 नवंबर", "30 मार्च", "26 जनवरी", "15 अगस्त"], "correct": 1, "explanation": "30 मार्च 1949 को राजस्थान राज्य बना, इसी दिन को राजस्थान दिवस मनाते हैं।"},
+    {"question": "दिलवाड़ा जैन मंदिर कहां है?", "options": ["जयपुर", "माउंट आबू", "जोधपुर", "राजसमंद"], "correct": 1, "explanation": "दिलवाड़ा मंदिर माउंट आबू में स्थित प्रसिद्ध जैन मंदिर है।"},
+    {"question": "राजस्थान का पहला निजी वन्यजीव अभ्यारण्य कौन सा है?", "options": ["रणथंभोर", "सरिस्का", "तलछापर", "भंसरोगढ़"], "correct": 2, "explanation": "तलछापर (अलवर) राजस्थान का पहला निजी वन्यजीव अभ्यारण्य है।"},
+    {"question": "मेहरानगढ़ दुर्ग किस शहर में है?", "options": ["जयपुर", "जोधपुर", "बीकानेर", "जैसलमेर"], "correct": 1, "explanation": "मेहरानगढ़ दुर्ग जोधपुर में है, राव जोधा ने बनवाया।"},
+    {"question": "राजस्थान की सबसे ऊंची चोटी कौन सी है?", "options": ["गुरु शिखर", "सेर", "जरगा", "रघुनाथगढ़"], "correct": 0, "explanation": "गुरु शिखर (1722 मीटर) राजस्थान की सबसे ऊंची चोटी है।"},
+    {"question": "पुष्कर मेला किस नदी के किनारे लगता है?", "options": ["बनास", "चम्बल", "पुष्कर नदी", "लूनी"], "correct": 2, "explanation": "पुष्कर मेला पुष्कर नदी के किनारे कार्तिक पूर्णिमा पर लगता है।"},
+    {"question": "जवाहर सागर बांध किस नदी पर बना है?", "options": ["बनास", "चम्बल", "लूनी", "माही"], "correct": 1, "explanation": "जवाहर सागर बांध चम्बल नदी पर कोटा में बना है।"},
+    {"question": "राजस्थान का राज्य खनिज कौन सा है?", "options": ["तांबा", "लोहा", "मार्बल", "सोना"], "correct": 2, "explanation": "मार्बल राजस्थान का राज्य खनिज है, मकराना मार्बल विश्व प्रसिद्ध है।"},
+]
+
+user_data = {}
+
+def get_main_menu():
+    return ReplyKeyboardMarkup(
+        [["🎮 क्विज़ शुरू करो", "📊 मेरा स्कोर"], ["🔄 रीसेट"]],
+        resize_keyboard=True
+    )
+
+# ====== START ======
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    uid = user.id
+    user_data[uid] = {"score": 0, "total": 0, "qi": 0, "waiting": False, "chat_id": update.effective_chat.id}
+    text = f"""
+╔══════════════════════════╗
+║   🏆 QUIZ CHAMPION 🏆    ║
+╚══════════════════════════╝
+
+👤 स्वागत है {user.first_name} जी!
+
+📌 विषय: *राजस्थान GK*
+📝 कुल सवाल: *{len(QUESTIONS)}*
+
+✅ सही = हरा रंग + उछलते आइकन
+❌ गलत = लाल रंग
+
+━━━━━━━━━━━━━━━━━━━━
+👆 "क्विज़ शुरू करो" दबाओ!
+"""
+    await update.message.reply_text(text, reply_markup=get_main_menu(), parse_mode="Markdown")
+
+# ====== क्विज़ शुरू करो ======
+async def start_quiz(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user_data[uid] = {"score": 0, "total": 0, "qi": 0, "waiting": False, "chat_id": update.effective_chat.id}
+    await send_poll(context, uid, 0)
+
+# ====== POLL भेजो ======
+async def send_poll(context, uid, qi):
+    if qi >= len(QUESTIONS):
+        await show_result(context, uid)
+        return
+
+    q = QUESTIONS[qi]
+    ud = user_data[uid]
+    ud["qi"] = qi
+    ud["waiting"] = True
+    chat_id = ud["chat_id"]
+    total = len(QUESTIONS)
+    bar = "🟩" * (qi + 1) + "⬜" * (total - qi - 1)
+
+    await context.bot.send_message(
+        chat_id=chat_id,
+        text=f"📌 *राजस्थान GK*\n{bar}  सवाल {qi+1}/{total}",
+        parse_mode="Markdown"
+    )
+
+    await context.bot.send_poll(
+        chat_id=chat_id,
+        question=q["question"],
+        options=q["options"],
+        type="quiz",
+        correct_option_id=q["correct"],
+        is_anonymous=False,
+        explanation=q["explanation"],
+        explanation_parse_mode="Markdown"
+    )
+
+# ====== जवाब आया ======
+async def poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    answer = update.poll_answer
+    uid = answer.user.id
+    if uid not in user_data or not user_data[uid].get("waiting"):
+        return
+
+    ud = user_data[uid]
+    ud["waiting"] = False
+    qi = ud["qi"]
+    q = QUESTIONS[qi]
+    chat_id = ud["chat_id"]
+
+    chosen = answer.option_ids[0]
+    if chosen == q["correct"]:
+        ud["score"] += 1
+    ud["total"] += 1
+
+    # अगला सवाल बटन या रिजल्ट
+    if qi + 1 < len(QUESTIONS):
+        buttons = [[InlineKeyboardButton("⏭ अगला सवाल", callback_data="next_q")]]
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📊 स्कोर: *{ud['score']}/{ud['total']}*\n\n⏭ अगला सवाल देखने के लिए बटन दबाओ:",
+            reply_markup=InlineKeyboardMarkup(buttons),
+            parse_mode="Markdown"
+        )
+    else:
+        await show_result(context, uid)
+
+# ====== अगला सवाल बटन ======
+async def next_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    uid = query.from_user.id
+    ud = user_data[uid]
+    await query.message.delete()
+    await send_poll(context, uid, ud["qi"] + 1)
+
+# ====== रिजल्ट ======
+async def show_result(context, uid):
+    ud = user_data[uid]
+    score = ud["score"]
+    total = len(QUESTIONS)
+    percent = (score / total) * 100
+    chat_id = ud["chat_id"]
+
+    if percent == 100: grade, stars = "🌟 परफेक्ट! शानदार!", "⭐⭐⭐⭐⭐"
+    elif percent >= 80: grade, stars = "🏆 बहुत बढ़िया!", "⭐⭐⭐⭐"
+    elif percent >= 60: grade, stars = "👍 अच्छा है!", "⭐⭐⭐"
+    elif percent >= 40: grade, stars = "😐 ठीक है", "⭐⭐"
+    else: grade, stars = "💪 फिर कोशिश करो!", "⭐"
+
+    text = f"""
+╔══════════════════════════╗
+║      🏆 रिजल्ट 🏆        ║
+╚══════════════════════════╝
+
+📌 विषय: *राजस्थान GK*
+📊 स्कोर: *{score}/{total}*
+📈 प्रतिशत: *{percent:.0f}%*
+
+{stars}
+🏅 *{grade}*
+
+━━━━━━━━━━━━━━━━━━━━
+🔄 दोबारा खेलो → "क्विज़ शुरू करो"
+"""
+    await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=get_main_menu(), parse_mode="Markdown")
+
+# ====== स्कोर ======
+async def show_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    ud = user_data.get(uid, {"score": 0, "total": 0})
+    text = f"""
+╔══════════════════════════╗
+║     📊 मेरा स्कोर        ║
+╚══════════════════════════╝
+
+✅ सही: *{ud.get('score', 0)}*
+📝 कुल: *{ud.get('total', 0)}*
+📝 बाकी: *{len(QUESTIONS) - ud.get('total', 0)}*
+"""
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+# ====== रीसेट ======
+async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    uid = update.effective_user.id
+    user_data[uid] = {"score": 0, "total": 0, "qi": 0, "waiting": False, "chat_id": update.effective_chat.id}
+    await update.message.reply_text("🔄 *रीसेट हो गया!*\n\n🎮 क्विज़ शुरू करो!", parse_mode="Markdown")
+
+# ====== मेनू बटन ======
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    t = update.message.text
+    if t == "🎮 क्विज़ शुरू करो": await start_quiz(update, context)
+    elif t == "📊 मेरा स्कोर": await show_score(update, context)
+    elif t == "🔄 रीसेट": await reset_cmd(update, context)
+
+# ====== मेन ======
+def main():
+    TOKEN = os.environ.get("BOT_TOKEN")
+    if not TOKEN:
+        print("❌ BOT_TOKEN नहीं मिला!")
+        return
+    print("🚀 राजस्थान GK Quiz शुरू हो रहा है...")
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(next_question, pattern="^next_q$"))
+    app.add_handler(PollAnswerHandler(poll_answer))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
+    print("✅ बॉट चल रहा है!")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
