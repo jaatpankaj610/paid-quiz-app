@@ -13,16 +13,17 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 1. क्रेडेंशियल्स
+# क्रेडेंशियल्स
 TELEGRAM_BOT_TOKEN = "7908449655:AAGDZChIBDLCEK-TtR2gdrfKozLkDG1NL6I"
 GEMINI_API_KEY = "AQ.Ab8RN6I8NtXy-q7H3WQPXGnJrpbTXsXrwLjA1Vs80h9YCxkccw"
+
 # Gemini क्लाइंट
 ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# यूजर की प्रोग्रेस ट्रैक करने के लिए लोकल मेमोरी
+# यूजर मेमोरी
 USER_SEEN_FACTS = {}
 
-# --- RENDER PORT BINDING (HEALTH CHECK SERVER) ---
+# --- Render Health Check Server ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -31,30 +32,28 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
         self.wfile.write(b"Bot is alive!")
 
 def run_health_check_server():
-    port = int(os.getenv("PORT", 8080))
+    # Render हमेशा PORT नाम का एनवायरनमेंट वेरिएबल देता है, डिफ़ॉल्ट 8080 रखेंगे
+    port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
     logger.info(f"Health check server started on port {port}")
     server.serve_forever()
-# --------------------------------------------------
 
+# --- Bot Functions ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/start कमांड दबाने पर"""
     user_id = str(update.message.from_user.id)
     USER_SEEN_FACTS[user_id] = []
     await update.message.reply_text(
         "👋 राम राम भाई! आपका स्मार्ट फैक्ट-टू-क्विज बोट तैयार है।\n\n"
-        "⏱️ हर बार आपको 20 एकदम नए और अलग तरीके से बने सवाल मिलेंगे।\n"
-        "शुरू करने के लिए `/test` कमांड दबाएं।"
+        "⏱️ शुरू करने के लिए `/test` या `/startquiz` कमांड दबाएं।"
     )
 
 async def generate_live_quiz(facts_list):
-    """20 फैक्ट्स से Gemini द्वारा लाइव 20 MCQs तैयार करना"""
     prompt = f"""
     तुम्हें नीचे दिए गए तथ्यों (Facts) का उपयोग करके 20 बेहतरीन परीक्षा-उपयोगी (Exam-Oriented) बहुविकल्पीय प्रश्न (MCQs) तैयार करने हैं।
     प्रत्येक फैक्ट से एक प्रश्न बनाना है।
     
     सख्त नियम:
-    1. उच्चारण शुद्ध रखने के लिए हिंदी अक्षर 'ड़' की जगह हमेशा 'ड' का प्रयोग करें (जैसे 'बड़ा' की जगह 'बडा', 'पकड़' की जगह 'पकड')।
+    1. उच्चारण शुद्ध रखने के लिए हिंदी अक्षर 'ड़' की जगह हमेशा 'ड' का प्रयोग करें (जैसे 'बड़ा' की जगह 'बडा', 'पकड़' की जगह 'पकड').
     2. आउटपुट केवल और केवल एक वैध JSON Array होना चाहिए, जिसमें कोई अतिरिक्त टेक्स्ट या ```json ``` ब्लॉक न हो।
     
     JSON का फॉर्मेट:
@@ -69,7 +68,6 @@ async def generate_live_quiz(facts_list):
     तथ्य (Facts) यहाँ हैं:
     {json.dumps(facts_list, ensure_ascii=False)}
     """
-    
     response = ai_client.models.generate_content(
         model='gemini-1.5-flash',
         contents=prompt,
@@ -77,11 +75,9 @@ async def generate_live_quiz(facts_list):
     return json.loads(response.text.strip())
 
 async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/test कमांड - 20 नए सवाल लाइव लेकर आना"""
     user_id = str(update.message.from_user.id)
     message = update.message
-    
-    await message.reply_text("🔄 GitHub से फैक्ट्स लोड करके AI से नए सवाल बनवा रहा हूँ, कृपया 10-15 सेकंड रुकें...")
+    await message.reply_text("🔄 AI से नए सवाल बनवा रहा हूँ, कृपया 10-15 सेकंड रुकें...")
 
     try:
         res = requests.get("https://raw.githubusercontent.com/jaatpankaj610/paid-quiz-app/refs/heads/main/facts.json")
@@ -93,7 +89,7 @@ async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if len(unseen_facts) < 20:
             unseen_facts = all_facts
             seen_list = []
-            await message.reply_text("🔄 progress reset हो रही है, अब दोबारा नए सिरे से सवाल आएंगे।")
+            await message.reply_text("🔄 progress reset हो रही है, दोबारा नए सिरे से सवाल आएंगे।")
 
         selected_facts = random.sample(unseen_facts, min(20, len(unseen_facts)))
         seen_list.extend(selected_facts)
@@ -106,7 +102,6 @@ async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['score'] = 0
         
         await send_next_question(message, context)
-
     except Exception as e:
         await message.reply_text(f"❌ गड़बड़ हो गई भाई! Error: {str(e)[:100]}")
 
@@ -116,12 +111,11 @@ async def send_next_question(message, context: ContextTypes.DEFAULT_TYPE):
     
     if index >= len(questions):
         score = context.user_data.get('score', 0)
-        await message.reply_text(f"🏁 **टेस्ट समाप्त भाई!**\n\n📊 आपका स्कोर: {score}/{len(questions)}\n\nअगले 20 नए सवालों के लिए फिर से `/test` दबाएं।")
+        await message.reply_text(f"🏁 **टेस्ट समाप्त भाई!**\n\n📊 आपका स्कोर: {score}/{len(questions)}\n\nअगले नए सवालों के लिए फिर से `/test` दबाएं।")
         return
 
     q = questions[index]
     text = f"📝 **प्रश्न {index + 1}:** {q['question_text']}\n\n"
-    
     for opt in q['options']:
         text += f"{opt}\n"
 
@@ -159,7 +153,6 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     full_text = f"📝 **प्रश्न {index + 1}:** {q['question_text']}\n"
     for opt in q['options']:
         full_text += f"\n{opt}"
-    
     full_text += f"\n\n--- \n{result_text}"
     
     keyboard = [[InlineKeyboardButton("अगला प्रश्न ➡️", callback_data="next_question")]]
@@ -173,17 +166,15 @@ async def next_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_next_question(query.message, context)
 
 def main():
-    if not TELEGRAM_BOT_TOKEN or TELEGRAM_BOT_TOKEN == "YOUR_BOT_TOKEN":
-        logger.error("TELEGRAM_BOT_TOKEN missing!")
-        return
-        
     # बोट शुरू होने से ठीक पहले बैकग्राउंड में हेल्थ चेक सर्वर चालू करना ताकि Render खुश रहे
     threading.Thread(target=run_health_check_server, daemon=True).start()
-    
+
+    # बोट एप्लीकेशन सेटअप
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("test", start_test))
+    application.add_handler(CommandHandler("startquiz", start_test))
     application.add_handler(CallbackQueryHandler(next_callback, pattern="^next_question$"))
     application.add_handler(CallbackQueryHandler(handle_answer, pattern="^ans_"))
     
