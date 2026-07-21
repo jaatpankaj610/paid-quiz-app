@@ -69,7 +69,7 @@ async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # 1. GitHub से JSON फाइल डाउनलोड करना
-        res = requests.get(https://raw.githubusercontent.com/jaatpankaj610/paid-quiz-app/refs/heads/main/facts.json)
+        res = requests.get("https://raw.githubusercontent.com/jaatpankaj610/paid-quiz-app/refs/heads/main/facts.json")
         all_facts = res.json()
         
         # 2. वो फैक्ट्स निकालना जो यूजर ने पहले नहीं देखे हैं
