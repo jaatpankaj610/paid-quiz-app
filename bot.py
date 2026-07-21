@@ -1,71 +1,71 @@
 import os
-import json
+import sys
 import logging
 import threading
-import sys
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from google import genai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# लॉगिंग सेटअप
+# 1. लॉगिंग सेटअप (ताकि Render पर सब दिखे)
 logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', 
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
-    handlers=[logging.StreamHandler(sys.stdout)]
+    stream=sys.stdout
 )
 logger = logging.getLogger(__name__)
 
-# क्रेडेंशियल्स (Render Environment Variables से लेना सबसे सुरक्षित है)
-# अगर आप अभी कोड में डालना चाहते हैं तो यहाँ डालें, लेकिन बाद में बदल लें
+# 2. क्रेडेंशियल्स (इसे यहाँ सीधे डाल रहा हूँ जैसा आपने कहा)
 TELEGRAM_BOT_TOKEN = "7908449655:AAGDZChIBDLCEK-TtR2gdrfKozLkDG1NL6I"
 GEMINI_API_KEY = "AQ.Ab8RN6I8NtXy-q7H3WQPXGnJrpbTXsXrwLjA1Vs80h9YCxkccw"
 
-# Gemini क्लाइंट सेटअप
+# 3. Gemini क्लाइंट (Try-Except के साथ ताकि क्रैश न हो)
 try:
     ai_client = genai.Client(api_key=GEMINI_API_KEY)
-    logger.info("Gemini Client initialized.")
+    logger.info("✅ Gemini Client initialized successfully!")
 except Exception as e:
-    logger.error(f"Gemini Client error: {e}")
+    logger.error(f"❌ Gemini Error: {e}")
 
-# --- Health Check Server (Render के लिए ज़रूरी) ---
+# 4. Health Check Server (Render की फ्री सर्विस के लिए बहुत ज़रूरी)
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Bot is alive!")
-    def log_message(self, format, *args):
-        return
+        self.wfile.write(b"Bot is live!")
+    def log_message(self, format, *args): return # फालतू लॉग्स रोकने के लिए
 
-def run_health_check_server():
+def run_health_check():
     port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    logger.info(f"Health check server on port {port}")
-    server.serve_forever()
+    # '0.0.0.0' पर बाइंड करना ज़रूरी है
+    httpd = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    logger.info(f"🚀 Health Server running on port {port}")
+    httpd.serve_forever()
 
-# --- Bot Commands ---
+# 5. बोट कमांड्स
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 राम राम भाई! बोट चालू है। क्विज़ के लिए /test लिखें।")
+    await update.message.reply_text("👋 राम राम भाई! बोट एकदम फिट है।")
 
-async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 AI सवाल तैयार कर रहा है, कृपया प्रतीक्षा करें...")
-
+# 6. मुख्य फंक्शन
 def main():
-    # 1. हेल्थ चेक सर्वर शुरू करें
-    t = threading.Thread(target=run_health_check_server, daemon=True)
-    t.start()
+    # पहले सर्वर चालू करो ताकि Render को लगे कि ऐप 'Live' है
+    server_thread = threading.Thread(target=run_health_check, daemon=True)
+    server_thread.start()
     
-    # 2. बोट शुरू करें
+    # 2 सेकंड का इंतज़ार ताकि सर्वर सेटल हो जाए
+    time.sleep(2)
+
     try:
+        logger.info("🤖 Starting Telegram Bot...")
         application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
         application.add_handler(CommandHandler("start", start))
-        application.add_handler(CommandHandler("test", start_test))
         
-        logger.info("Bot is starting polling...")
+        # 'drop_pending_updates' पुराने मैसेज इग्नोर करने के लिए
         application.run_polling(drop_pending_updates=True)
     except Exception as e:
-        logger.critical(f"Fatal error: {e}")
+        logger.error(f"💥 Bot Polling Error: {e}")
+        sys.exit(1)
 
 if __name__ == '__main__':
     main()
