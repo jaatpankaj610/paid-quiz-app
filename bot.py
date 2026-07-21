@@ -2,70 +2,78 @@ import os
 import sys
 import logging
 import threading
-import time
+import asyncio
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from google import genai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 
-# 1. लॉगिंग सेटअप (ताकि Render पर सब दिखे)
+# 1. बेहतर लॉगिंग
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO,
-    stream=sys.stdout
+    level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# 2. क्रेडेंशियल्स (इसे यहाँ सीधे डाल रहा हूँ जैसा आपने कहा)
+# 2. क्रेडेंशियल्स
 TELEGRAM_BOT_TOKEN = "7908449655:AAGDZChIBDLCEK-TtR2gdrfKozLkDG1NL6I"
 GEMINI_API_KEY = "AQ.Ab8RN6I8NtXy-q7H3WQPXGnJrpbTXsXrwLjA1Vs80h9YCxkccw"
 
-# 3. Gemini क्लाइंट (Try-Except के साथ ताकि क्रैश न हो)
+# 3. Gemini सेटअप
 try:
     ai_client = genai.Client(api_key=GEMINI_API_KEY)
-    logger.info("✅ Gemini Client initialized successfully!")
+    logger.info("✅ Gemini Client Ready!")
 except Exception as e:
     logger.error(f"❌ Gemini Error: {e}")
 
-# 4. Health Check Server (Render की फ्री सर्विस के लिए बहुत ज़रूरी)
+# 4. Render Health Check Server
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Bot is live!")
-    def log_message(self, format, *args): return # फालतू लॉग्स रोकने के लिए
+        self.wfile.write(b"Bot is alive!")
+    def log_message(self, format, *args): return
 
-def run_health_check():
-    port = int(os.environ.get("PORT", 8080))
-    # '0.0.0.0' पर बाइंड करना ज़रूरी है
+def run_health_server():
+    port = int(os.environ.get("PORT", 10000)) # Render uses 10000 or $PORT
     httpd = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
-    logger.info(f"🚀 Health Server running on port {port}")
+    logger.info(f"🚀 Health Server live on port {port}")
     httpd.serve_forever()
 
-# 5. बोट कमांड्स
+# 5. Bot Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 राम राम भाई! बोट एकदम फिट है।")
+    await update.message.reply_text("👋 राम राम भाई! बोट अब स्थिर (Stable) है।")
 
-# 6. मुख्य फंक्शन
-def main():
-    # पहले सर्वर चालू करो ताकि Render को लगे कि ऐप 'Live' है
-    server_thread = threading.Thread(target=run_health_check, daemon=True)
-    server_thread.start()
+# 6. मैन्युअल बोट रनर (Updater Bug से बचने के लिए)
+async def run_bot():
+    # Application बनाना
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # 2 सेकंड का इंतज़ार ताकि सर्वर सेटल हो जाए
-    time.sleep(2)
-
-    try:
-        logger.info("🤖 Starting Telegram Bot...")
-        application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-        application.add_handler(CommandHandler("start", start))
+    # कमांड्स जोड़ना
+    application.add_handler(CommandHandler("start", start))
+    
+    # बोट को शुरू करना
+    async with application:
+        await application.initialize()
+        await application.start()
+        logger.info("🤖 Bot Started and Waiting for Messages...")
+        # Polling शुरू करना (Updater bug से बचने का सबसे सुरक्षित तरीका)
+        await application.updater.start_polling(drop_pending_updates=True)
         
-        # 'drop_pending_updates' पुराने मैसेज इग्नोर करने के लिए
-        application.run_polling(drop_pending_updates=True)
-    except Exception as e:
-        logger.error(f"💥 Bot Polling Error: {e}")
-        sys.exit(1)
+        # बोट को चलता रखने के लिए (Infinite Loop)
+        while True:
+            await asyncio.sleep(3600)
 
 if __name__ == '__main__':
-    main()
+    # हेल्थ सर्वर को थ्रेड में चलाएँ
+    threading.Thread(target=run_health_server, daemon=True).start()
+    
+    # बोट को चलाएँ
+    try:
+        asyncio.run(run_bot())
+    except KeyboardInterrupt:
+        pass
+    except Exception as e:
+        logger.critical(f"💥 Bot Crash: {e}")
+        sys.exit(1)
