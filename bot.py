@@ -186,6 +186,21 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_answer, pattern="^ans_"))
 
     print("🤖 बोट Railway पर लाइव होने के लिए तैयार है...")
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+import threading
+
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Bot is alive")
+
+def run_health_check():
+    server = HTTPServer(('0.0.0.0', 10000), HealthCheckHandler)
+    server.serve_forever()
+
+# बैकग्राउंड में सर्वर चालू करना ताकि Render इसे फेल न करे
+threading.Thread(target=run_health_check, daemon=True).start()
     application.run_polling()
 
 if __name__ == "__main__":
