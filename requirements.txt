@@ -1,4 +1,3 @@
-python-telegram-bot==20.7
-# clean minimal poll v5
-requests
+python-telegram-bot
 google-genai
+requests
