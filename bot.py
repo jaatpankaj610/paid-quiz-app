@@ -1,202 +1,192 @@
 import os
-import asyncio
-import logging
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, PollAnswerHandler, MessageHandler, filters, ContextTypes
+import random
+import requests
+import json
+from google import genai
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-logging.basicConfig(level=logging.INFO)
+# 1. क्रेडेंशियल्स (Railway Environment Variables से या यहाँ सीधे डालें)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_BOT_TOKEN")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "YOUR_GEMINI_KEY")
+GITHUB_JSON_URL = "https://raw.githubusercontent.com/YOUR_USERNAME/YOUR_REPO/main/facts.json"
 
-# ====== राजस्थान GK ======
-QUESTIONS = [
-    {"question": "1. राजस्थान की राजधानी क्या है?", "options": ["जयपुर", "जोधपुर", "उदयपुर", "कोटा"], "correct": 0},
-    {"question": "2. राजस्थान का सबसे बड़ा जिला (क्षेत्रफल) कौन सा है?", "options": ["जोधपुर", "जैसलमेर", "बीकानेर", "बाड़मेर"], "correct": 1},
-    {"question": "3. राजस्थान की सबसे लंबी नदी कौन सी है?", "options": ["चम्बल", "बनास", "लूनी", "माही"], "correct": 0},
-    {"question": "4. थार मरुस्थल को और क्या कहते हैं?", "options": ["सहारा", "गोबी", "महान भारतीय मरुस्थल", "कालाहारी"], "correct": 2},
-    {"question": "5. राजस्थान में कुल कितने जिले हैं (2024)?", "options": ["33", "41", "50", "36"], "correct": 2},
-    {"question": "6. अरावली पर्वतमाला की सबसे ऊंची चोटी?", "options": ["सेर", "गुरु शिखर", "जरगा", "रघुनाथगढ़"], "correct": 1},
-    {"question": "7. राजस्थान की सबसे बड़ी झील कौन सी है?", "options": ["पुष्कर", "सांभर", "फतहसागर", "जयसमंद"], "correct": 1},
-    {"question": "8. कुम्भलगढ़ दुर्ग किसने बनवाया?", "options": ["राणा कुम्भा", "राणा सांगा", "महाराणा प्रताप", "राणा हम्मीर"], "correct": 0},
-    {"question": "9. हवा महल किस शहर में है?", "options": ["जोधपुर", "उदयपुर", "जयपुर", "कोटा"], "correct": 2},
-    {"question": "10. राजस्थान का राज्य पक्षी कौन सा है?", "options": ["मोर", "बाज", "गोडावण", "तोता"], "correct": 2},
-    {"question": "11. मेवाड़ का संस्थापक कौन था?", "options": ["बप्पा रावल", "राणा हम्मीर", "राणा कुम्भा", "राणा सांगा"], "correct": 0},
-    {"question": "12. राजस्थान दिवस कब मनाया जाता है?", "options": ["1 नवंबर", "30 मार्च", "26 जनवरी", "15 अगस्त"], "correct": 1},
-    {"question": "13. दिलवाड़ा जैन मंदिर कहां है?", "options": ["जयपुर", "माउंट आबू", "जोधपुर", "राजसमंद"], "correct": 1},
-    {"question": "14. मेहरानगढ़ दुर्ग किस शहर में है?", "options": ["जयपुर", "जोधपुर", "बीकानेर", "जैसलमेर"], "correct": 1},
-    {"question": "15. पुष्कर मेला किस नदी के किनारे लगता है?", "options": ["बनास", "चम्बल", "पुष्कर नदी", "लूनी"], "correct": 2},
-    {"question": "16. जवाहर सागर बांध किस नदी पर है?", "options": ["बनास", "चम्बल", "लूनी", "माही"], "correct": 1},
-    {"question": "17. राजस्थान का राज्य खनिज कौन सा है?", "options": ["तांबा", "लोहा", "मार्बल", "सोना"], "correct": 2},
-    {"question": "18. राजस्थान का सबसे गर्म जिला कौन सा है?", "options": ["जैसलमेर", "बीकानेर", "चूरू", "बाड़मेर"], "correct": 2},
-    {"question": "19. उदयपुर को किस नाम से जानते हैं?", "options": ["गुलाबी शहर", "नीली शहर", "सफेद शहर", "सोने का शहर"], "correct": 1},
-    {"question": "20. रणथंभोर किस जिले में है?", "options": ["अलवर", "सवाई माधोपुर", "करौली", "धौलपुर"], "correct": 1},
-]
+# Gemini क्लाइंट
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-user_data = {}
+# यूजर की प्रोग्रेस ट्रैक करने के लिए लोकल मेमोरी
+# (Railway जब तक रीस्टार्ट नहीं होगा, यह याद रखेगा कि कौन से फैक्ट्स आप पढ़ चुके हैं)
+USER_SEEN_FACTS = {}
 
-def get_menu():
-    return ReplyKeyboardMarkup([["📊 स्कोर", "🔄 नया शुरू"]], resize_keyboard=True)
-
-# ====== START ======
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    uid = user.id
-    user_data[uid] = {
-        "score": 0, "total": 0, "qi": 0,
-        "waiting": False, "answered": False,
-        "chat_id": update.effective_chat.id,
-        "next_task": None
-    }
-
+    """/start कमांड दबाने पर"""
+    user_id = str(update.message.from_user.id)
+    # यूजर का नया सेशन शुरू करना
+    USER_SEEN_FACTS[user_id] = []
+    
     await update.message.reply_text(
-        f"🏆 *Quiz Champion*\n\n👤 {user.first_name}\n📝 राजस्थान GK ({len(QUESTIONS)} सवाल)\n⏱️ हर सवाल 45 सेकंड का\n\n🚀 शुरू हो रहा है...",
-        reply_markup=get_menu(),
-        parse_mode="Markdown"
+        "👋 राम राम भाई! आपका स्मार्ट फैक्ट-टू-क्विज बोट तैयार है।\n\n"
+        "⏱️ हर बार आपको 20 एकदम नए और अलग तरीके से बने सवाल मिलेंगे।\n"
+        "शुरू करने के लिए `/test` कमांड दबाएं।"
     )
 
-    await asyncio.sleep(2)
-    await send_poll(context, uid, 0)
+async def generate_live_quiz(facts_list):
+    """20 फैक्ट्स से Gemini द्वारा लाइव 20 MCQs तैयार करना"""
+    prompt = f"""
+    तुम्हें नीचे दिए गए तथ्यों (Facts) का उपयोग करके 20 बेहतरीन परीक्षा-उपयोगी (Exam-Oriented) बहुविकल्पीय प्रश्न (MCQs) तैयार करने हैं।
+    प्रत्येक फैक्ट से एक प्रश्न बनाना है।
+    
+    सख्त नियम:
+    1. उच्चारण शुद्ध रखने के लिए हिंदी अक्षर 'ड़' की जगह हमेशा 'ड' का प्रयोग करें (जैसे 'बड़ा' की जगह 'बडा', 'पकड़' की जगह 'पकड')।
+    2. आउटपुट केवल और केवल एक वैध JSON Array होना चाहिए, जिसमें कोई अतिरिक्त टेक्स्ट या ```json ``` ब्लॉक न हो।
+    
+    JSON का फॉर्मेट:
+    [
+      {{
+        "question_text": "प्रश्न यहाँ...",
+        "options": ["A) विकल्प 1", "B) विकल्प 2", "C) विकल्प 3", "D) विकल्प 4"],
+        "correct_option": "A"
+      }}
+    ]
 
-# ====== सिर्फ पोल भेजो (बिना किसी एक्स्ट्रा टेक्स्ट के) ======
-async def send_poll(context, uid, qi):
-    if qi >= len(QUESTIONS):
-        await show_result(context, uid)
-        return
-
-    ud = user_data[uid]
-    if ud.get("next_task"):
-        ud["next_task"].cancel()
-
-    q = QUESTIONS[qi]
-    ud["qi"] = qi
-    ud["waiting"] = True
-    ud["answered"] = False
-
-    # सिर्फ पोल भेजो - कोई हेडर नहीं, कोई फुटर नहीं
-    await context.bot.send_poll(
-        chat_id=ud["chat_id"],
-        question=q["question"],
-        options=q["options"],
-        type="quiz",
-        correct_option_id=q["correct"],
-        is_anonymous=False,
-        open_period=45
+    तथ्य (Facts) यहाँ हैं:
+    {json.dumps(facts_list, ensure_ascii=False)}
+    """
+    
+    response = ai_client.models.generate_content(
+        model='gemini-1.5-flash',
+        contents=prompt,
     )
+    
+    return json.loads(response.text.strip())
 
-    # 51 सेकंड बाद अगला
-    ud["next_task"] = asyncio.create_task(auto_next(context, uid, qi, 51))
+async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/test कमांड - 20 नए सवाल लाइव लेकर आना"""
+    user_id = str(update.message.from_user.id)
+    message = update.message
+    
+    await message.reply_text("🔄 GitHub से फैक्ट्स लोड करके AI से नए सवाल बनवा रहा हूँ, कृपया 10-15 सेकंड रुकें...")
 
-# ====== जवाब आया - कुछ मत भेजो, बस स्कोर अपडेट करो ======
-async def poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    answer = update.poll_answer
-    uid = answer.user.id
-
-    if uid not in user_data or not user_data[uid].get("waiting") or user_data[uid]["answered"]:
-        return
-
-    ud = user_data[uid]
-    ud["answered"] = True
-    ud["waiting"] = False
-
-    if answer.option_ids[0] == QUESTIONS[ud["qi"]]["correct"]:
-        ud["score"] += 1
-    ud["total"] += 1
-
-    if ud.get("next_task"):
-        ud["next_task"].cancel()
-
-    # जवाब देने के 6 सेकंड बाद अगला सवाल
-    ud["next_task"] = asyncio.create_task(auto_next(context, uid, ud["qi"], 6))
-
-# ====== ऑटो नेक्स्ट ======
-async def auto_next(context, uid, expected_qi, delay):
     try:
-        await asyncio.sleep(delay)
-    except asyncio.CancelledError:
+        # 1. GitHub से JSON फाइल डाउनलोड करना
+        res = requests.get(GITHUB_JSON_URL)
+        all_facts = res.json()
+        
+        # 2. वो फैक्ट्स निकालना जो यूजर ने पहले नहीं देखे हैं
+        seen_list = USER_SEEN_FACTS.get(user_id, [])
+        unseen_facts = [f for f in all_facts if f not in seen_list]
+        
+        # अगर सारे फैक्ट्स खत्म हो गए हैं तो रीसेट कर दें
+        if len(unseen_facts) < 20:
+            unseen_facts = all_facts
+            seen_list = []
+            await message.reply_text("🔄 आपने सारे फैक्ट्स पढ़ लिए हैं! प्रोग्रेस रीसेट हो रही है, अब दोबारा नए सिरे से सवाल आएंगे।")
+
+        # 3. रैंडम 20 फैक्ट्स चुनना
+        selected_facts = random.sample(unseen_facts, min(20, len(unseen_facts)))
+        
+        # यूजर की सीन लिस्ट में इन्हें जोड़ना ताकि अगली बार ये न आएं
+        seen_list.extend(selected_facts)
+        USER_SEEN_FACTS[user_id] = seen_list
+
+        # 4. AI से लाइव सवाल बनवाना
+        quiz_data = await generate_live_quiz(selected_facts)
+        
+        # टेस्ट का डेटा कॉन्टेक्स्ट में सेव करना ताकि एक-एक करके सवाल दिखा सकें
+        context.user_data['quiz_questions'] = quiz_data
+        context.user_data['current_index'] = 0
+        context.user_data['score'] = 0
+        
+        await send_next_question(message, context)
+
+    except Exception as e:
+        await message.reply_text(f"❌ गड़बड़ हो गई भाई! कृपया चेक करें कि GitHub URL सही है या नहीं। Error: {str(e)[:100]}")
+
+async def send_next_question(message, context: ContextTypes.DEFAULT_TYPE):
+    """अगला सवाल दिखाने के लिए"""
+    questions = context.user_data.get('quiz_questions', [])
+    index = context.user_data.get('current_index', 0)
+    
+    if index >= len(questions):
+        score = context.user_data.get('score', 0)
+        await message.reply_text(f"🏁 **टेस्ट समाप्त भाई!**\n\n📊 आपका स्कोर: {score}/{len(questions)}\n\nअगले 20 नए सवालों के लिए फिर से `/test` दबाएं।")
         return
 
-    ud = user_data.get(uid)
-    if not ud or ud["qi"] != expected_qi:
-        return
-
-    if not ud["answered"] and ud["waiting"]:
-        ud["waiting"] = False
-        ud["total"] += 1
-        await send_poll(context, uid, expected_qi + 1)
+    q = questions[index]
+    text = f"📝 **प्रश्न {index + 1}:** {q['question_text']}\n\n"
+    
+    # बटन्स तैयार करना
+    keyboard = []
+    # हर रो में 2 बटन (A और B एक लाइन में, C और D दूसरी लाइन में)
+    keyboard.append([
+        InlineKeyboardButton("A", callback_data=f"ans_A_{q['correct_option']}"),
+        InlineKeyboardButton("B", callback_data=f"ans_B_{q['correct_option']}")
+    ])
+    keyboard.append([
+        InlineKeyboardButton("C", callback_data=f"ans_C_{q['correct_option']}"),
+        InlineKeyboardButton("D", callback_data=f"ans_D_{q['correct_option']}")
+    ])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # अगर यह पहला सवाल है तो नया मैसेज भेजें, नहीं तो पुराने को एडिट करें
+    if hasattr(message, 'edit_text'):
+        await message.edit_text(text, reply_markup=reply_markup)
     else:
-        await send_poll(context, uid, expected_qi + 1)
+        await message.reply_text(text, reply_markup=reply_markup)
 
-# ====== स्टाइलिश रिजल्ट ======
-async def show_result(context, uid):
-    ud = user_data[uid]
-    score = ud["score"]
-    total = len(QUESTIONS)
-    percent = (score / total) * 100
+async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """जब यूजर A, B, C, D बटन पर क्लिक करे"""
+    query = update.callback_query
+    await query.answer()
+    
+    # डेटा निकालना (जैसे: ans_A_B -> यूजर ने A चुना, सही B था)
+    data = query.data.split('_')
+    user_choice = data[1]
+    correct_choice = data[2]
+    
+    index = context.user_data.get('current_index', 0)
+    questions = context.user_data.get('quiz_questions', [])
+    q = questions[index]
+    
+    # सही/गलत का फैसला
+    if user_choice == correct_choice:
+        context.user_data['score'] += 1
+        result_text = f"✅ **सही उत्तर भाई!**\n\n"
+    else:
+        result_text = f"❌ **गलत जवाब!**\n\n👉 सही उत्तर **{correct_choice}** था।\n\n"
+        
+    # पुराना सवाल दिखाना और उसके नीचे रिजल्ट जोड़ना
+    full_text = f"📝 **प्रश्न {index + 1}:** {q['question_text']}\n"
+    for opt in q['options']:
+        full_text += f"\n{opt}"
+    
+    full_text += f"\n\n--- \n{result_text}"
+    
+    # अगला सवाल देखने के लिए एक 'Next ➡️' बटन देना
+    keyboard = [[InlineKeyboardButton("अगला प्रश्न ➡️", callback_data="next_question")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await query.edit_message_text(text=full_text, reply_markup=reply_markup)
 
-    if percent == 100: grade = "🏆 शानदार! परफेक्ट स्कोर!"
-    elif percent >= 80: grade = "🥈 बहुत बढ़िया!"
-    elif percent >= 60: grade = "🥉 अच्छा प्रयास!"
-    elif percent >= 40: grade = "📚 और मेहनत करो!"
-    else: grade = "🧳 राजस्थान घूमकर आओ!"
-
-    text = f"""
-┏━━━━━━━━━━━━━━━━━━━┓
-┃     🏆  RESULT  🏆   ┃
-┗━━━━━━━━━━━━━━━━━━━┛
-
-📐 विषय: राजस्थान GK
-📊 स्कोर: {score} / {total}
-📈 प्रतिशत: {percent:.0f}%
-
-{grade}
-
-🔄 दोबारा खेलो → "नया शुरू"
-"""
-    await context.bot.send_message(
-        chat_id=ud["chat_id"],
-        text=text,
-        reply_markup=get_menu()
-    )
-
-# ====== स्कोर ======
-async def show_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    ud = user_data.get(uid, {"score": 0, "total": 0})
-    await update.message.reply_text(f"📊 स्कोर: {ud.get('score', 0)} / {len(QUESTIONS)}")
-
-# ====== रीसेट ======
-async def reset_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uid = update.effective_user.id
-    if uid in user_data and user_data[uid].get("next_task"):
-        user_data[uid]["next_task"].cancel()
-
-    user_data[uid] = {
-        "score": 0, "total": 0, "qi": 0,
-        "waiting": False, "answered": False,
-        "chat_id": update.effective_chat.id,
-        "next_task": None
-    }
-
-    await update.message.reply_text("🔄 नया शुरू हो रहा है...")
-    await asyncio.sleep(2)
-    await send_poll(context, uid, 0)
-
-# ====== मेनू ======
-async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t = update.message.text
-    if t == "📊 स्कोर": await show_score(update, context)
-    elif t == "🔄 नया शुरू": await reset_cmd(update, context)
+async def next_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """जब यूजर 'Next' बटन दबाए"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['current_index'] += 1
+    await send_next_question(query.message, context)
 
 def main():
-    TOKEN = os.environ.get("BOT_TOKEN")
-    if not TOKEN:
-        print("❌ BOT_TOKEN नहीं मिला!")
-        return
-    print("🚀 Clean Quiz Bot शुरू...")
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(PollAnswerHandler(poll_answer))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_handler))
-    print("✅ बॉट चल रहा है!")
-    app.run_polling(drop_pending_updates=True)
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("test", start_test))
+    application.add_handler(CallbackQueryHandler(next_callback, pattern="^next_question$"))
+    application.add_handler(CallbackQueryHandler(handle_answer, pattern="^ans_"))
+
+    print("🤖 बोट Railway पर लाइव होने के लिए तैयार है...")
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
