@@ -7,14 +7,13 @@ import requests
 from telegram import Update, Poll, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, PollAnswerHandler, ContextTypes
 
-# 1. लॉगिंग
+# 1. लॉगिंग सेटअप
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 2. कॉन्फ़िगरेशन
 TOKEN = "7467353478:AAH9kSAgaEbz3oXjFMbY6w53bqoq4Z2Ssyk"
 GITHUB_URL = "https://raw.githubusercontent.com/jaatpankaj610/paid-quiz-app/main/quiz_database.json"
-# आपका Render URL
 WEBHOOK_URL = f"https://bankerbot-mdzw.onrender.com/{TOKEN}"
 
 # 3. डाटाबेस लोडर
@@ -27,9 +26,8 @@ def load_db():
         return {}
 
 # 4. क्विज़ लॉजिक
-async def send_q(context, chat_id):
-    # डेटा सुरक्षित तरीके से निकालें
-    ud = context.application.user_data.get(chat_id)
+async def send_q(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    ud = context.user_data
     if not ud or 'qs' not in ud:
         return
 
@@ -60,9 +58,9 @@ async def send_q(context, chat_id):
 
 # 5. हैंडलर्स
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    # यूजर डेटा को रीसेट करें
-    context.application.user_data[chat_id] = {'busy': False, 'score': 0, 'idx': 0}
+    # 'mappingproxy' एरर को ठीक करने के लिए context.user_data का उपयोग
+    context.user_data.clear()
+    context.user_data.update({'busy': False, 'score': 0, 'idx': 0})
     
     db = load_db()
     if not db:
@@ -84,49 +82,44 @@ async def handle_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not topic_data: 
         return
 
-    # रैंडम सवाल चुनें
     qs = random.sample(topic_data, min(len(topic_data), 20))
-    # डेटा स्टोर करें
-    context.application.user_data[chat_id] = {
+    
+    # डेटा अपडेट करें
+    context.user_data.update({
         'qs': qs, 
         'idx': 0, 
         'score': 0, 
         'busy': True, 
         'chat_id': chat_id
-    }
+    })
     
     await query.delete_message()
     await send_q(context, chat_id)
 
 async def handle_ans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ans = update.poll_answer
-    user_id = ans.user.id
-    ud = context.application.user_data.get(user_id)
+    ud = context.user_data
     
+    # चेक करें कि क्या यह सही पोल है
     if ud and ud.get('busy') and ud.get('poll_id') == ans.poll_id:
         idx = ud['idx'] - 1
         if ans.option_ids[0] == ud['qs'][idx]['answer']:
             ud['score'] += 1
         
-        # थोड़ा इंतज़ार करके अगला सवाल भेजें
         await asyncio.sleep(1)
-        await send_q(context, user_id)
+        await send_q(context, update.effective_user.id)
 
-# 6. MAIN FUNCTION
+# 6. MAIN
 def main():
-    # Application बिल्ड करें
     application = Application.builder().token(TOKEN).build()
     
-    # हैंडलर्स जोड़ें
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(handle_topic))
     application.add_handler(PollAnswerHandler(handle_ans))
 
-    # पोर्ट सेट करें (Render के लिए अनिवार्य)
     port = int(os.environ.get("PORT", 10000))
 
-    # वेबहूक चालू करें
-    # drop_pending_updates=True पुराने सारे झगड़ों को खत्म कर देगा
+    # Webhook का उपयोग Conflict खत्म करने के लिए
     application.run_webhook(
         listen="0.0.0.0",
         port=port,
