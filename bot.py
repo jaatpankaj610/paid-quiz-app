@@ -3,8 +3,8 @@ import json
 import random
 import logging
 import asyncio
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 # 1. लॉगिंग
 logging.basicConfig(level=logging.INFO)
@@ -13,48 +13,62 @@ logger = logging.getLogger(__name__)
 # 2. टोकन
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# --- 3. फाइल से सवाल उठाना ---
+# --- 3. डेटाबेस लोड करना ---
 
-def load_questions():
-    """GitHub वाली questions.json फाइल लोड करना"""
-    try:
-        if os.path.exists("questions.json"):
-            with open("questions.json", "r", encoding="utf-8") as f:
-                return json.load(f)
-    except Exception as e:
-        logger.error(f"Error loading questions.json: {e}")
-    return []
+def load_database():
+    if os.path.exists("quiz_database.json"):
+        with open("quiz_database.json", "r", encoding="utf-8") as f:
+            try: return json.load(f)
+            except: return {}
+    return {}
 
-# --- 4. बोट हैंडलर ---
+# --- 4. बोट हैंडलर्स ---
 
 is_bot_busy = False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_bot_busy
-    
-    # अगर एक बार टेस्ट शुरू हो गया, तो दूसरी कोई कमांड न सुने
-    if is_bot_busy:
-        return 
+    if is_bot_busy: return
 
-    is_bot_busy = True
+    db = load_database()
+    if not db:
+        await update.message.reply_text("❌ 'quiz_database.json' खाली है या नहीं मिली।")
+        return
+
+    # PDF/Topic के नामों के बटन बनाना
+    keyboard = []
+    for topic in db.keys():
+        keyboard.append([InlineKeyboardButton(topic, callback_data=topic)])
     
-    all_qs = load_questions()
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("📚 **अपना Topic या PDF चुनें जिसका आप टेस्ट देना चाहते हैं:**", reply_markup=reply_markup, parse_mode='Markdown')
+
+async def handle_topic_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global is_bot_busy
+    query = update.callback_query
+    topic_name = query.data
+    await query.answer()
     
+    is_bot_busy = True # लॉक चालू
+    
+    db = load_database()
+    all_qs = db.get(topic_name, [])
+
     if not all_qs:
-        await update.message.reply_text("❌ 'questions.json' फाइल नहीं मिली या खाली है।")
+        await query.edit_message_text(f"❌ {topic_name} में कोई सवाल नहीं मिले।")
         is_bot_busy = False
         return
 
-    await update.message.reply_text("🔎 आपके लिए 20 रैंडम सवाल तैयार किए जा रहे हैं...")
+    await query.edit_message_text(f"🔎 **{topic_name}** से सवाल तैयार हो रहे हैं...")
 
-    # 20 रैंडम सवाल चुनना (अगर बैंक में 20 से कम हैं तो सब चुन लेना)
+    # 20 सवाल चुनना
     sample_size = min(len(all_qs), 20)
     selected_qs = random.sample(all_qs, sample_size)
 
-    full_quiz_text = f"📝 **GK QUIZ - {sample_size} QUESTIONS**\n\n"
+    full_quiz_text = f"📝 **TEST: {topic_name}**\n━━━━━━━━━━━━━━━\n\n"
     
     for i, q in enumerate(selected_qs, 1):
-        # मुख्य जादू: variations में से कोई एक रैंडम भाषा चुनना
+        # भाषा रैंडमली बदलना
         question_text = random.choice(q['variations'])
         
         q_block = f"❓ **सवाल {i}:** {question_text}\n"
@@ -65,35 +79,30 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         correct_ans = opts_labels[q['answer']]
         q_block += f"✅ **उत्तर:** {correct_ans}\n\n"
 
-        # टेलीग्राम की 4096 लिमिट चेक करना
         if len(full_quiz_text) + len(q_block) > 3900:
-            await context.bot.send_message(chat_id=update.effective_chat.id, text=full_quiz_text, parse_mode='Markdown')
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=full_text, parse_mode='Markdown')
             full_quiz_text = ""
         
-        full_text_to_add = q_block
-        full_quiz_text += full_text_to_add
+        full_quiz_text += q_block
 
     if full_quiz_text:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=full_quiz_text, parse_mode='Markdown')
 
     await context.bot.send_message(
         chat_id=update.effective_chat.id, 
-        text="🏆 **टेस्ट पूरा हुआ!**\n\nभाषा बदल-बदल कर नए टेस्ट के लिए फिर से /start भेजें।"
+        text=f"🏆 **{topic_name} का टेस्ट पूरा हुआ!**\n\nनया टॉपिक चुनने के लिए /start भेजें।"
     )
     
-    is_bot_busy = False # अब बोट दोबारा फ्री है
+    is_bot_busy = False # लॉक खत्म
 
 async def ignore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """जब बोट टेस्ट दे रहा हो, तो बाकी सब इग्नोर करे"""
-    if is_bot_busy:
-        return
+    if is_bot_busy: return
 
 async def run_bot():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
     app.add_handler(CommandHandler("start", start))
-    
-    # सब कुछ इग्नोर करने के लिए
+    app.add_handler(CallbackQueryHandler(handle_topic_selection))
     app.add_handler(MessageHandler(filters.ALL, ignore_all), group=1)
 
     async with app:
@@ -103,7 +112,5 @@ async def run_bot():
         while True: await asyncio.sleep(3600)
 
 if __name__ == '__main__':
-    try:
-        asyncio.run(run_bot())
-    except:
-        pass
+    try: asyncio.run(run_bot())
+    except: pass
