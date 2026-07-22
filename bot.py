@@ -1,20 +1,19 @@
 import os
 import sys
 import logging
-import threading
 import asyncio
 import json
 import re
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import random
 from google import genai
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-# 1. Logging
-logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+# 1. लॉगिंग (गलतियों को ट्रैक करने के लिए)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. Credentials
+# 2. क्रेडेंशियल्स
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -23,112 +22,107 @@ try:
 except Exception as e:
     logger.error(f"AI Setup Error: {e}")
 
-# 3. Health Server
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"Quiz Bot is Online")
-    def log_message(self, format, *args): return
+# --- 3. FACTS से सवाल बनाने का फंक्शन ---
 
-def run_health_server():
-    httpd = HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 10000))), HealthCheckHandler)
-    httpd.serve_forever()
-
-# --- 4. AI QUIZ GENERATION (BATCH METHOD) ---
-
-def load_user_facts():
+def load_facts():
+    """facts.json से डाटा पढ़ना"""
     try:
         if os.path.exists("facts.json"):
             with open("facts.json", "r", encoding="utf-8") as f:
                 data = json.load(f)
-                return "\n".join(data) if isinstance(data, list) else str(data)
+                return str(data)
     except: pass
-    return "भारत का इतिहास, भूगोल और सामान्य ज्ञान।"
+    return "भारत का इतिहास और सामान्य ज्ञान।"
 
-async def fetch_questions_from_ai(count=10):
-    """AI se sawal mangne ka ek chota function"""
-    user_facts = load_user_facts()
+async def get_questions_ai_robust(count=10):
+    """AI से सवाल माँगना - फेल होने पर दोबारा कोशिश करना"""
+    facts = load_facts()
+    # भाषा और स्टाइल को अलग रखने के लिए रैंडम निर्देश
+    styles = ["सरल भाषा", "कठिन भाषा", "रोचक तरीका", "प्रतियोगी परीक्षा स्तर"]
+    selected_style = random.choice(styles)
+    
     prompt = f"""
-    Generate {count} GK MCQs in Hindi based on: {user_facts}.
-    Strictly follow:
-    1. Output ONLY a valid JSON array.
-    2. Use 'ड' instead of 'ड़'.
-    3. Format: [{{"question": "...", "options": ["A", "B", "C", "D"], "answer": 0}}]
+    तुम्हें इन तथ्यों का उपयोग करके {count} MCQs तैयार करने हैं: {facts}
+    निर्देश:
+    1. भाषा: हिंदी ({selected_style})।
+    2. आउटपुट केवल एक शुद्ध JSON Array होना चाहिए।
+    3. 'ड़' की जगह 'ड' का प्रयोग करें।
+    Format: [{{"question": "...", "options": ["A", "B", "C", "D"], "answer": 0}}]
     """
-    try:
-        response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-        match = re.search(r'\[.*\]', response.text, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-    except Exception as e:
-        logger.error(f"Batch Error: {e}")
+
+    for attempt in range(3): # 3 बार कोशिश करेगा
+        try:
+            response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+            match = re.search(r'\[.*\]', response.text, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+        except Exception as e:
+            logger.warning(f"Attempt {attempt+1} failed: {e}")
+            await asyncio.sleep(2) # 2 सेकंड रुककर दोबारा कोशिश
     return []
 
-# --- 5. BOT HANDLERS ---
+# --- 4. BOT HANDLERS ---
 
 is_bot_busy = False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_bot_busy
     
+    # अगर बोट पहले से काम कर रहा है तो कोई भी कमांड न सुनें
     if is_bot_busy:
-        return # Do nothing if already working
+        return 
 
     is_bot_busy = True
-    status_msg = await update.message.reply_text("⏳ AI 20 सवाल तैयार कर रहा है (Batch 1/2)...")
+    status_msg = await update.message.reply_text("🔄 AI आपकी फाइल से नए सवाल तैयार कर रहा है...\n\n(इस दौरान कोई और कमांड काम नहीं करेगी)")
 
-    # Batch 1: Pehle 10 sawal
-    batch1 = await fetch_questions_from_ai(10)
-    
-    await status_msg.edit_text("⏳ AI 20 सवाल तैयार कर रहा है (Batch 2/2)...")
-    
-    # Batch 2: Agle 10 sawal
-    batch2 = await fetch_questions_from_ai(10)
+    # 10-10 के दो बैच में सवाल मँगाना ताकि एरर न आए
+    batch1 = await get_questions_ai_robust(10)
+    await status_msg.edit_text("⏳ आधे सवाल तैयार हैं, बाकी बन रहे हैं...")
+    batch2 = await get_questions_ai_robust(10)
 
-    all_questions = batch1 + batch2
+    final_quiz = batch1 + batch2
 
-    if len(all_questions) < 5: # Agar bahut kam sawal mile
-        await status_msg.edit_text("❌ AI से संपर्क नहीं हो पाया। कृपया दोबारा /start करें।")
+    if len(final_quiz) == 0:
+        await status_msg.edit_text("❌ माफ़ी चाहता हूँ, AI अभी जवाब नहीं दे पा रहा है। कृपया 1 मिनट बाद /start करें।")
         is_bot_busy = False
         return
 
     await status_msg.delete()
 
-    # 20 questions ko format karke bhejna
-    full_text = f"📝 **GK QUIZ: TOTAL {len(all_questions)} QUESTIONS**\n\n"
+    # 20 सवाल एक साथ भेजना
+    full_text = f"📖 **आपका नया टेस्ट (कुल {len(final_quiz)} सवाल)**\n\n"
     
-    for i, q in enumerate(all_questions, 1):
-        q_block = f"❓ **सवाल {i}:** {q['question']}\n"
+    for i, q in enumerate(final_quiz, 1):
+        q_text = f"❓ **सवाल {i}:** {q['question']}\n"
         opts = ["A", "B", "C", "D"]
-        for idx, opt in enumerate(q['options']):
-            q_block += f"   {opts[idx]}) {opt}\n"
+        for idx, opt in enumerate(q.get('options', [])):
+            q_text += f"   {opts[idx]}) {opt}\n"
         
-        correct = opts[q['answer']]
-        q_block += f"✅ **उत्तर:** {correct}\n\n"
+        correct_idx = q.get('answer', 0)
+        q_text += f"✅ **उत्तर:** {q['options'][correct_idx]}\n\n"
 
-        # Telegram length limit check
-        if len(full_text) + len(q_block) > 3900:
+        # मैसेज की सीमा चेक करना (4096 characters)
+        if len(full_text) + len(q_text) > 3800:
             await context.bot.send_message(chat_id=update.effective_chat.id, text=full_text, parse_mode='Markdown')
             full_text = ""
         
-        full_text += q_block
+        full_text += q_text
 
     if full_text:
         await context.bot.send_message(chat_id=update.effective_chat.id, text=full_text, parse_mode='Markdown')
 
-    await context.bot.send_message(
-        chat_id=update.effective_chat.id, 
-        text="🏆 **टेस्ट पूरा हुआ!** अब आप दोबारा /start कर सकते हैं।"
-    )
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="🏆 **टेस्ट खत्म!**\n\nअगले नए टेस्ट के लिए /start भेजें।")
     
-    is_bot_busy = False
+    is_bot_busy = False # अब बोट दोबारा कमांड सुनने के लिए तैयार है
 
 async def ignore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_bot_busy: return
+    """जब बोट बिजी हो तो सब कुछ इग्नोर करे"""
+    if is_bot_busy:
+        return
 
 async def run_bot():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.ALL, ignore_all), group=1)
 
@@ -139,7 +133,7 @@ async def run_bot():
         while True: await asyncio.sleep(3600)
 
 if __name__ == '__main__':
-    threading.Thread(target=run_health_server, daemon=True).start()
     try:
         asyncio.run(run_bot())
-    except: pass
+    except:
+        sys.exit(1)
