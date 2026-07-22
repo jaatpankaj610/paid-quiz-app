@@ -14,14 +14,13 @@ from telegram.ext import (
     ContextTypes
 )
 
-# 1. लॉगिंग
+# 1. लॉगिंग - अब हर कमांड लॉग होगी
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. टोकन
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# --- 3. HEALTH SERVER (Render को Live रखने के लिए) ---
+# --- 2. HEALTH SERVER ---
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/restart-bot':
@@ -35,12 +34,12 @@ class HealthHandler(BaseHTTPRequestHandler):
     def log_message(self, format, *args): return
 
 def run_health_server():
-    port = int(os.environ.get("PORT", 8000))
+    # Render के लिए पोर्ट 10000 फिक्स करना
+    port = int(os.environ.get("PORT", 10000))
     httpd = HTTPServer(("0.0.0.0", port), HealthHandler)
     logger.info(f"Health Server started on port {port}")
     httpd.serve_forever()
 
-# --- 4. डेटाबेस फंक्शन ---
 def load_db():
     if os.path.exists("quiz_database.json"):
         with open("quiz_database.json", "r", encoding="utf-8") as f:
@@ -48,14 +47,12 @@ def load_db():
             except: return {}
     return {}
 
-# --- 5. क्विज़ लॉजिक ---
 async def send_q(context, chat_id):
     ud = context.user_data
     if ud.get('idx', 0) >= len(ud.get('qs', [])):
-        await context.bot.send_message(chat_id, f"🏆 रिवीजन संपन्न! स्कोर: {ud.get('score', 0)}/{len(ud['qs'])}\n/start")
+        await context.bot.send_message(chat_id, f"🏆 क्विज़ संपन्न! स्कोर: {ud.get('score', 0)}/{len(ud['qs'])}\nनया टॉपिक: /start")
         ud['busy'] = False
         return
-
     q = ud['qs'][ud['idx']]
     msg = await context.bot.send_poll(
         chat_id=chat_id, question=f"✨ ({ud['idx']+1}/{len(ud['qs'])}) {random.choice(q['variations'])}",
@@ -66,6 +63,7 @@ async def send_q(context, chat_id):
     ud['idx'] += 1
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Start command received!") # यह लॉग में दिखेगा
     context.user_data.clear()
     db = load_db()
     if not db:
@@ -94,22 +92,14 @@ async def handle_ans(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await asyncio.sleep(1)
         await send_q(context, ud.get('chat_id'))
 
-# --- 6. MAIN ---
 def main():
-    # Health server को अलग thread में चलाना
     threading.Thread(target=run_health_server, daemon=True).start()
-
-    # Application बनाना
     app = Application.builder().token(TOKEN).build()
-    
-    # हैंडलर्स जोड़ना
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_topic))
     app.add_handler(PollAnswerHandler(handle_ans))
-
-    print("Bot is starting polling...")
-    # run_polling() अपने आप लूप और स्टॉप को हैंडल करता है
-    # drop_pending_updates=True पुराने अटके हुए "Conflict" वाले मैसेज साफ़ कर देगा
+    
+    logger.info("Bot is starting polling...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
