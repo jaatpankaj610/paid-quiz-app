@@ -4,6 +4,7 @@ import random
 import logging
 import asyncio
 import threading
+import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Poll
 from telegram.ext import (
@@ -11,9 +12,7 @@ from telegram.ext import (
     CommandHandler, 
     CallbackQueryHandler, 
     PollAnswerHandler, 
-    ContextTypes, 
-    MessageHandler, 
-    filters
+    ContextTypes
 )
 
 # 1. लॉगिंग
@@ -23,12 +22,23 @@ logger = logging.getLogger(__name__)
 # 2. टोकन
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# --- 3. HEALTH CHECK SERVER (Render को Live रखने के लिए और Conflict रोकने के लिए) ---
+# --- 3. HEALTH SERVER + SECRET KILL SWITCH ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
+        # अगर आप ब्राउज़र में https://your-link.onrender.com/restart-bot खोलेंगे
+        if self.path == '/restart-bot':
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(b"Restarting Bot... Please wait 1 minute.")
+            logger.info("Restart signal received. Killing process...")
+            # यह कमांड बोट को अंदर से बंद कर देगी, Render इसे खुद दोबारा स्टार्ट करेगा
+            os._exit(1) 
+            
+        # सामान्य हेल्थ चेक (गूगल स्क्रिप्ट के लिए)
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is Alive!")
+        self.wfile.write(b"Bot is Running!")
+
     def log_message(self, format, *args): return
 
 def run_health_server():
@@ -44,7 +54,7 @@ def load_database():
             except: return {}
     return {}
 
-# --- 5. अगला सवाल भेजने का फंक्शन ---
+# --- 5. क्विज़ लॉजिक ---
 async def send_next_question(context: ContextTypes.DEFAULT_TYPE, chat_id):
     user_data = context.user_data
     quiz_set = user_data.get('quiz_set', [])
@@ -54,65 +64,50 @@ async def send_next_question(context: ContextTypes.DEFAULT_TYPE, chat_id):
         score = user_data.get('score', 0)
         await context.bot.send_message(
             chat_id=chat_id, 
-            text=f"🎊 **क्विज़ संपन्न!** 🎊\n\n📊 स्कोर: `{score}/{len(quiz_set)}`\n\nनया टॉपिक: /start",
-            parse_mode='Markdown'
+            text=f"🎊 **क्विज़ संपन्न!** 🎊\n\n📊 स्कोर: `{score}/{len(quiz_set)}`\n\nनया टॉपिक: /start"
         )
         user_data['is_busy'] = False
         return
 
     q = quiz_set[index]
-    question_text = random.choice(q['variations'])
-    
-    message = await context.bot.send_poll(
-        chat_id=chat_id,
-        question=f"✨ ({index+1}/{len(quiz_set)}) {question_text}",
-        options=q['options'],
-        type=Poll.QUIZ,
-        correct_option_id=q['answer'],
-        is_anonymous=False,
-        explanation="मेहनत जारी रखें! 📚"
-    )
-    user_data['current_poll_id'] = message.poll.id
-    user_data['current_index'] = index + 1
+    try:
+        message = await context.bot.send_poll(
+            chat_id=chat_id,
+            question=f"✨ ({index+1}/{len(quiz_set)}) {random.choice(q['variations'])}",
+            options=q['options'],
+            type=Poll.QUIZ,
+            correct_option_id=q['answer'],
+            is_anonymous=False,
+            explanation="मेहनत जारी रखें! 📚"
+        )
+        user_data['current_poll_id'] = message.poll.id
+        user_data['current_index'] = index + 1
+    except Exception as e:
+        logger.error(f"Poll error: {e}")
+        user_data['is_busy'] = False
 
 # --- 6. हैंडलर्स ---
-
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    context.user_data['is_busy'] = False
-    context.user_data['score'] = 0
-    
     db = load_database()
     if not db:
         await update.message.reply_text("❌ डेटाबेस नहीं मिला।")
         return
 
     icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "💎", "🔥", "🌈"]
-    keyboard = []
-    for topic in db.keys():
-        icon = random.choice(icons)
-        keyboard.append([InlineKeyboardButton(f"{icon} {topic} {icon}", callback_data=topic)])
-    
-    await update.message.reply_text(
-        "🎯 **रिवीजन मेनू**\nअपना टॉपिक चुनें और शुरू करें:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
-    )
+    keyboard = [[InlineKeyboardButton(f"{random.choice(icons)} {t} {random.choice(icons)}", callback_data=t)] for t in db.keys()]
+    await update.message.reply_text("🎯 **रिवीजन मेनू**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_topic_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer(text="🚀 शुरू हो रहा है...")
-    
+    await query.answer()
     topic_name = query.data
     db = load_database()
     all_qs = db.get(topic_name, [])
     if not all_qs: return
 
     selected_qs = random.sample(all_qs, min(len(all_qs), 20))
-    context.user_data.update({
-        'quiz_set': selected_qs, 'current_index': 0, 'is_busy': True, 
-        'chat_id': query.message.chat_id, 'score': 0
-    })
-
+    context.user_data.update({'quiz_set': selected_qs, 'current_index': 0, 'is_busy': True, 'chat_id': query.message.chat_id, 'score': 0})
     await query.delete_message()
     await send_next_question(context, query.message.chat_id)
 
@@ -127,10 +122,6 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_next_question(context, user_data.get('chat_id'))
 
 async def run_bot():
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("Token Not Found!")
-        return
-    
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CallbackQueryHandler(handle_topic_selection))
@@ -138,14 +129,13 @@ async def run_bot():
     
     await app.initialize()
     await app.start()
-    # drop_pending_updates=True पुराने अटके मैसेज हटा देगा
+    # Conflict होने पर यह पुराने अपडेट्स को छोड़ देगा
     await app.updater.start_polling(drop_pending_updates=True)
     while True: await asyncio.sleep(3600)
 
 if __name__ == '__main__':
-    # Health Server चालू करना ताकि Render को पोर्ट मिले
     threading.Thread(target=run_health_server, daemon=True).start()
     try:
         asyncio.run(run_bot())
     except:
-        pass
+        sys.exit(1)
