@@ -1,156 +1,206 @@
-import os
-import json
-import random
-import logging
-import asyncio
-import requests
-import time
-from telegram import Update, Poll, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, PollAnswerHandler, ContextTypes
-
-# 1. लॉगिंग
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# 2. कॉन्फ़िगरेशन
-TOKEN = "7467353478:AAH9kSAgaEbz3oXjFMbY6w53bqoq4Z2Ssyk"
-GITHUB_URL = "https://raw.githubusercontent.com/jaatpankaj610/paid-quiz-app/main/quiz_database.json"
-WEBHOOK_URL = f"https://bankerbot-mdzw.onrender.com/{TOKEN}"
-
-DB_CACHE = {}
-
-def sync_db():
-    """GitHub से तुरंत और पक्का नया डेटा लाने के लिए"""
-    global DB_CACHE
-    try:
-        # यहाँ '?cache_buster=' लगाया है ताकि GitHub पुराने डेटा को न भेजे
-        headers = {'Cache-Control': 'no-cache'}
-        r = requests.get(f"{GITHUB_URL}?cb={int(time.time())}", headers=headers, timeout=20)
-        if r.status_code == 200:
-            DB_CACHE = r.json()
-            logger.info(f"Sync Successful: {len(DB_CACHE)} topics.")
-            return True
-    except Exception as e:
-        logger.error(f"Sync Error: {e}")
-        return False
-
-# 3. क्विज़ लॉजिक
-async def send_q(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    ud = context.user_data
-    if not ud or 'qs' not in ud: return
-
-    idx = ud.get('idx', 0)
-    qs = ud['qs']
-    total_qs = len(qs) # अब यह ऑटोमैटिक PDF के सारे सवाल गिनेगा
-
-    if idx >= total_qs:
-        score = ud.get('score', 0)
-        await context.bot.send_message(chat_id, f"🎊 **रिवीजन संपन्न!**\n\n📊 आपका स्कोर: `{score}/{total_qs}` सही\n\nनया टॉपिक चुनने के लिए /start दबाएँ।")
-        ud['busy'] = False
-        return
-
-    q = qs[idx]
-    try:
-        # यहाँ 'total_qs' का उपयोग हो रहा है, जो पक्का PDF के कुल सवाल दिखाएगा
-        await context.bot.send_poll(
-            chat_id=chat_id,
-            question=f"✨ ({idx+1}/{total_qs}) {random.choice(q['variations'])}",
-            options=q['options'],
-            type=Poll.QUIZ,
-            correct_option_id=q['answer'],
-            is_anonymous=False,
-            explanation="सही उत्तर आपकी मेहनत का परिणाम है! 📚"
-        )
-        ud['idx'] = idx + 1
-    except Exception as e:
-        logger.error(f"Poll Error: {e}")
-
-# 4. हैंडलर्स
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    context.user_data.clear()
-    
-    # अगर शुरू में डेटा नहीं है तो लोड करें
-    if not DB_CACHE: sync_db()
-
-    if not DB_CACHE:
-        await update.message.reply_text("❌ डेटाबेस लोड नहीं हो सका।")
-        return
-
-    icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "💎", "🔥", "🌈"]
-    keyboard = [[InlineKeyboardButton(f"{random.choice(icons)} {t}", callback_data=t)] for t in DB_CACHE.keys()]
-    
-    await update.message.reply_text("🎯 **अपना टॉपिक चुनें:**", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def handle_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    chat_id = query.message.chat_id
-    
-    topic_name = query.data
-    # पक्का करना कि उस टॉपिक के सारे सवाल लिस्ट में आएँ
-    all_qs = list(DB_CACHE.get(topic_name, []))
-    
-    if not all_qs:
-        await query.message.reply_text("❌ इस टॉपिक में कोई सवाल नहीं मिले।")
-        return
-
-    # रैंडम शफल ताकि क्रम बदल जाए पर सवाल सारे रहें
-    random.shuffle(all_qs)
-    
-    # यूजर डेटा में पूरे सवाल सेव करना
-    context.user_data.update({
-        'qs': all_qs, 
-        'idx': 0, 
-        'score': 0, 
-        'busy': True
-    })
-    
-    await query.delete_message()
-    # यहाँ यूजर को मैसेज भी दे सकते हैं कि कितने सवाल मिले
-    await context.bot.send_message(chat_id, f"📝 इस टॉपिक में कुल {len(all_qs)} सवाल मिले हैं। चलिए शुरू करते हैं!")
-    await send_q(context, chat_id)
-
-async def handle_ans(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    ans = update.poll_answer
-    user_id = ans.user.id
-    ud = context.application.user_data.get(user_id)
-    
-    if ud and ud.get('busy'):
-        idx = ud['idx'] - 1
-        if ans.option_ids[0] == ud['qs'][idx]['answer']:
-            ud['score'] += 1
-        await asyncio.sleep(0.6)
-        await send_q(context, user_id)
-
-async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """नया डेटा GitHub से तुरंत खींचने के लिए"""
-    await update.message.reply_text("⏳ GitHub से ताज़ा सवाल लोड किए जा रहे हैं...")
-    if sync_db():
-        # यहाँ कुल टॉपिक्स और कुल सवालों की गिनती दिखाएगा
-        total_questions = sum(len(v) for v in DB_CACHE.values())
-        await update.message.reply_text(f"✅ सिंक सफल!\n📂 कुल टॉपिक्स: {len(DB_CACHE)}\n📚 कुल सवाल: {total_questions}")
-    else:
-        await update.message.reply_text("❌ सिंक फेल हो गया।")
-
-# 5. MAIN
-def main():
-    sync_db()
-    application = Application.builder().token(TOKEN).build()
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("refresh", refresh)) # ताज़ा डेटा के लिए
-    application.add_handler(CallbackQueryHandler(handle_topic))
-    application.add_handler(PollAnswerHandler(handle_ans))
-
-    port = int(os.environ.get("PORT", 10000))
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=port,
-        url_path=TOKEN,
-        webhook_url=WEBHOOK_URL,
-        drop_pending_updates=True
-    )
-
-if __name__ == '__main__':
-    main()
+{
+  "Science_Questions_2": [
+    {
+      "variations": ["विटामिन A की कमी से कौन सा रोग होता है?", "रतौंधी (Night Blindness) किस विटामिन की कमी के कारण होता है?"],
+      "options": ["बेरी-बेरी", "स्कर्वी", "रतौंधी", "रिकेट्स"],
+      "answer": 2
+    },
+    {
+      "variations": ["धातुओं की रानी या सबसे तन्य (Ductile) धातु कौन सी है?", "किस धातु के बहुत पतले तार आसानी से बनाए जा सकते हैं?"],
+      "options": ["चांदी", "सोना", "तांबा", "प्लाैटिनम"],
+      "answer": 1
+    },
+    {
+      "variations": ["मानव शरीर में सबसे छोटी हड्डी कौन सी है?", "स्टेपीज (Stapes) हड्डी शरीर के किस अंग में पाई जाती है?"],
+      "options": ["फीमर", "स्टेपीज", "टिबिया", "रेडियस"],
+      "answer": 1
+    },
+    {
+      "variations": ["शुष्क बर्फ (Dry Ice) किसे कहा जाता है?", "ठोस कार्बन डाइऑक्साइड को किस नाम से जाना जाता है?"],
+      "options": ["ठोस नाइट्रोजन", "ठोस कार्बन डाइऑक्साइड", "ठोस ऑक्सीजन", "ठोस हाइड्रोजन"],
+      "answer": 1
+    },
+    {
+      "variations": ["कार्य और ऊर्जा का SI मात्रक क्या है?", "जूल (Joule) किसकी इकाई है?"],
+      "options": ["न्यूटन", "वाट", "जूल", "पास्कल"],
+      "answer": 2
+    },
+    {
+      "variations": ["भोपाल गैस त्रासदी में किस विषैली गैस का रिसाव हुआ था?", "मिथाइल आइसोसाइनेट (MIC) किस घटना से संबंधित है?"],
+      "options": ["क्लोरीन", "मिथाइल आइसोसाइनेट", "मस्टर्ड गैस", "फॉस्जीन"],
+      "answer": 1
+    },
+    {
+      "variations": ["मानव शरीर में हीमोग्लोबिन का मुख्य कार्य क्या है?", "ऑक्सीजन का परिवहन शरीर में किसके द्वारा होता है?"],
+      "options": ["जीवाणु नष्ट करना", "ऑक्सीजन का परिवहन", "रक्तदाब नियंत्रित करना", "ऊर्जा प्रदान करना"],
+      "answer": 1
+    },
+    {
+      "variations": ["दाब (Pressure) का SI मात्रक क्या है?", "पास्कल (Pascal) किसकी इकाई है?"],
+      "options": ["न्यूटन", "पास्कल", "जूल", "डेसिबल"],
+      "answer": 1
+    },
+    {
+      "variations": ["सौर ऊर्जा को विद्युत ऊर्जा में बदलने वाले उपकरण को क्या कहते हैं?", "सोलर सेल (Solar Cell) का कार्य क्या है?"],
+      "options": ["सौर कुकर", "सोलर सेल", "सोलर हीटर", "डायनेमो"],
+      "answer": 1
+    },
+    {
+      "variations": ["चींटी के डंक में कौन सा अम्ल पाया जाता है?", "फॉर्मिक एसिड (Formic Acid) किसमें पाया जाता है?"],
+      "options": ["एसिटिक अम्ल", "साइट्रिक अम्ल", "फॉर्मिक अम्ल", "लैक्टिक अम्ल"],
+      "answer": 2
+    },
+    {
+      "variations": ["मानव मस्तिष्क का सबसे बड़ा भाग कौन सा है?", "प्रमस्तिष्क (Cerebrum) का मुख्य कार्य क्या है?"],
+      "options": ["अनुमस्तिष्क", "प्रमस्तिष्क (Cerebrum)", "मेडुला", "स्पाइनल कॉर्ड"],
+      "answer": 1
+    },
+    {
+      "variations": ["विद्युत बल्ब का फिलामेंट किस धातु का बना होता है?", "टंगस्टन (Tungsten) का उपयोग किसमें किया जाता है?"],
+      "options": ["तांबा", "नाइक्रोम", "टंगस्टन", "एल्युमीनियम"],
+      "answer": 2
+    },
+    {
+      "variations": ["दूध की शुद्धता किस यंत्र से मापी जाती है?", "लैक्टोमीटर (Lactometer) का प्रयोग किसमें होता है?"],
+      "options": ["बैरोमीटर", "लैक्टोमीटर", "थर्मामीटर", "हाइग्रोमीटर"],
+      "answer": 1
+    },
+    {
+      "variations": ["रक्तचाप (Blood Pressure) मापने वाले यंत्र को क्या कहते हैं?", "स्फिग्मोमैनोमीटर से क्या मापा जाता है?"],
+      "options": ["स्टेथोस्कोप", "स्फिग्मोमैनोमीटर", "ईसीजी", "पेसमेकर"],
+      "answer": 1
+    },
+    {
+      "variations": ["किस रंग के प्रकाश का तरंगदैर्ध्य (Wavelength) सबसे अधिक होता है?", "लाल रंग के प्रकाश की क्या विशेषता है?"],
+      "options": ["बैंगनी", "हरा", "लाल", "पीला"],
+      "answer": 2
+    },
+    {
+      "variations": ["मनुष्य के शरीर में कुल कितनी हड्डियां होती हैं?", "वयस्क मानव कंकाल में हड्डियों की संख्या कितनी है?"],
+      "options": ["206", "208", "300", "210"],
+      "answer": 0
+    },
+    {
+      "variations": ["एलपीजी (LPG) गैस में मुख्य रूप से कौन सी गैस होती है?", "ब्यूटेन और प्रोपेन का मिश्रण किसमें होता है?"],
+      "options": ["मीथेन", "ब्यूटेन और प्रोपेन", "इथेन", "हाइड्रोजन"],
+      "answer": 1
+    },
+    {
+      "variations": ["खट्टे फलों और नींबू में कौन सा अम्ल पाया जाता है?", "साइट्रिक एसिड (Citric Acid) का मुख्य स्रोत क्या है?"],
+      "options": ["लैक्टिक अम्ल", "साइट्रिक अम्ल", "ऑक्सालिक अम्ल", "टार्टरिक अम्ल"],
+      "answer": 1
+    },
+    {
+      "variations": ["कवक (Fungi) के अध्ययन को क्या कहा जाता है?", "मायकोलॉजी (Mycology) में किसका अध्ययन होता है?"],
+      "options": ["फाइकोलॉजी", "मायकोलॉजी", "बायोलॉजी", "इकोलॉजी"],
+      "answer": 1
+    },
+    {
+      "variations": ["अनुवांशिकी का जनक (Father of Genetics) किसे कहा जाता है?", "ग्रेगर मेंडेल ने अपने प्रयोग किस पौधे पर किए थे?"],
+      "options": ["चार्ल्स डार्विन", "ग्रेगर मेंडेल", "रॉबर्ट हुक", "लैमार्क"],
+      "answer": 1
+    }
+  ],
+  "Geography_Questions_2": [
+    {
+      "variations": ["विश्व का सबसे ऊँचा जलप्रपात कौन सा है?", "एंजिल जलप्रपात (Angel Falls) किस देश में स्थित है?"],
+      "options": ["नियाग्रा", "विक्टोरिया", "एंजिल जलप्रपात", "जोग जलप्रपात"],
+      "answer": 2
+    },
+    {
+      "variations": ["भारत में मीठे पानी की सबसे बड़ी प्राकृतिक झील कौन सी है?", "वूलर झील (Wular Lake) किस केंद्र शासित प्रदेश में है?"],
+      "options": ["चिलका", "वूलर झील", "सांभर", "दाल झील"],
+      "answer": 1
+    },
+    {
+      "variations": ["किस नदी को 'बिहार का शोक' कहा जाता है?", "कोसी नदी अपनी किस प्रवृत्ति के लिए जानी जाती है?"],
+      "options": ["दामोदर", "कोसी", "गंडक", "घघर"],
+      "answer": 1
+    },
+    {
+      "variations": ["काजीरंगा राष्ट्रीय उद्यान किस राज्य में स्थित है?", "एक सींग वाले गैंडे के लिए कौन सा राष्ट्रीय उद्यान प्रसिद्ध है?"],
+      "options": ["पश्चिम बंगाल", "असम", "उत्तराखंड", "मध्य प्रदेश"],
+      "answer": 1
+    },
+    {
+      "variations": ["विश्व की सबसे बड़ी ताजे पानी की झील कौन सी है?", "लेक सुपीरियर (Lake Superior) कहाँ स्थित है?"],
+      "options": ["कैस्पियन सागर", "बैकाल झील", "सुपीरियर झील", "विक्टोरिया झील"],
+      "answer": 2
+    },
+    {
+      "variations": ["'सात पहाड़ियों का नगर' किसे कहा जाता है?", "रोम (Rome) को किस उपनाम से जाना जाता है?"],
+      "options": ["पेरिस", "रोम", "लंदन", "न्यूयार्क"],
+      "answer": 1
+    },
+    {
+      "variations": ["भारत में काली मिट्टी किस फसल के लिए सबसे उपयुक्त मानी जाती है?", "रेगुर मिट्टी (Regur Soil) का दूसरा नाम क्या है?"],
+      "options": ["गेहूं", "कपास", "चावल", "गन्ना"],
+      "answer": 1
+    },
+    {
+      "variations": ["विश्व की सबसे गहरी झील कौन सी है?", "बैकाल झील (Lake Baikal) किस देश में स्थित है?"],
+      "options": ["सुपीरियर झील", "बैकाल झील", "मिशिगन", "टिटिकाका"],
+      "answer": 1
+    },
+    {
+      "variations": ["जिम कॉर्बेट राष्ट्रीय उद्यान किस राज्य में स्थित है?", "भारत का पहला राष्ट्रीय उद्यान कौन सा है?"],
+      "options": ["हिमाचल प्रदेश", "उत्तराखंड", "राजस्थान", "उत्तर प्रदेश"],
+      "answer": 1
+    },
+    {
+      "variations": ["विश्व में सबसे अधिक जनसंख्या वाला देश कौन सा है?", "जनसंख्या के मामले में भारत का कौन सा स्थान है?"],
+      "options": ["चीन", "भारत", "अमेरिका", "इंडोनेशिया"],
+      "answer": 1
+    },
+    {
+      "variations": ["'मध्यरात्रि के सूर्य का देश' (Land of the Midnight Sun) किसे कहते हैं?", "नॉर्वे में सूर्य से जुड़ी कौन सी खगोलीय घटना होती है?"],
+      "options": ["फिनलैंड", "नॉर्वे", "जापान", "ब्रिटेन"],
+      "answer": 1
+    },
+    {
+      "variations": ["कपास के उत्पादन में भारत का कौन सा राज्य अग्रणी है?", "गुजरात में किस मिट्टी की प्रचुरता के कारण कपास अधिक होता है?"],
+      "options": ["महाराष्ट्र", "गुजरात", "पंजाब", "हरियाणा"],
+      "answer": 1
+    },
+    {
+      "variations": ["स्वेज नहर किन दो सागरों को जोड़ती है?", "भूमध्य सागर और लाल सागर को जोड़ने वाली नहर कौन सी है?"],
+      "options": ["पनामा नहर", "स्वेज नहर", "कील नहर", "सू नहर"],
+      "answer": 1
+    },
+    {
+      "variations": ["भारत का सबसे लंबा राष्ट्रीय राजमार्ग कौन सा है?", "NH-44 कहाँ से कहाँ तक जाता है?"],
+      "options": ["NH-7", "NH-44", "NH-1", "NH-8"],
+      "answer": 1
+    },
+    {
+      "variations": ["'अरब सागर की रानी' किसे कहा जाता है?", "कोच्चि (Kochi) बंदरगाह किस राज्य में स्थित है?"],
+      "options": ["मुंबई", "कोच्चि", "चेन्नई", "कोलकाता"],
+      "answer": 1
+    },
+    {
+      "variations": ["पृथ्वी की सबसे ऊपरी परत को क्या कहते हैं?", "क्रस्ट (Crust) या भूपर्पटी में कौन से तत्व बहुतायत में होते हैं?"],
+      "options": ["मेंटल", "कोर", "भूपर्पटी (Crust)", "मैग्मा"],
+      "answer": 2
+    },
+    {
+      "variations": ["विश्व का सबसे बड़ा प्रायद्वीप (Peninsula) कौन सा है?", "अरेबियन प्रायद्वीप किस महाद्वीप के पास है?"],
+      "options": ["डेक्कन प्रायद्वीप", "अरब प्रायद्वीप", "इंडो-चीन", "अलास्का"],
+      "answer": 1
+    },
+    {
+      "variations": ["संसार की छत (Roof of the World) किसे कहा जाता है?", "पामीर का पठार कहाँ स्थित है?"],
+      "options": ["तिब्बत का पठार", "पामीर का पठार", "दक्कन का पठार", "अनातोलिया का पठार"],
+      "answer": 1
+    },
+    {
+      "variations": ["गिर राष्ट्रीय उद्यान किस पशु के लिए प्रसिद्ध है?", "एशियाई शेरों का एकमात्र प्राकृतिक आवास कौन सा है?"],
+      "options": ["बाघ", "एशियाई शेर", "एक सींग वाला गैंडा", "हाथी"],
+      "answer": 1
+    },
+    {
+      "variations": ["भारत की सबसे पुरानी पर्वत श्रृंखला कौन सी है?", "अरावली पर्वतमाला की सबसे ऊँची चोटी कौन सी है?"],
+      "options": ["हिमालय", "सतपुड़ा", "अरावली", "नीलगिरी"],
+      "answer": 2
+    }
+  ]
+}
