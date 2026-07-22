@@ -4,7 +4,6 @@ import random
 import logging
 import asyncio
 import threading
-import sys
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Poll
 from telegram.ext import (
@@ -16,35 +15,33 @@ from telegram.ext import (
 )
 
 # 1. लॉगिंग
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # 2. टोकन
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-# --- 3. HEALTH SERVER + RESTART LINK ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
+# --- 3. HEALTH SERVER (Render को Live रखने के लिए) ---
+class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == '/restart-bot':
             self.send_response(200)
             self.end_headers()
-            self.wfile.write(b"Restarting Bot... Please wait 1 minute.")
-            logger.info("Restart signal received. Killing process...")
-            os._exit(1) # रेंडर इसे खुद दोबारा स्टार्ट करेगा
-            
+            self.wfile.write(b"Restarting... Wait 1 minute.")
+            os._exit(1)
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is Alive and Running!")
-
+        self.wfile.write(b"Bot is Live!")
     def log_message(self, format, *args): return
 
 def run_health_server():
     port = int(os.environ.get("PORT", 8000))
-    httpd = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    httpd = HTTPServer(("0.0.0.0", port), HealthHandler)
+    logger.info(f"Health Server started on port {port}")
     httpd.serve_forever()
 
-# --- 4. डेटाबेस लोड करना ---
-def load_database():
+# --- 4. डेटाबेस फंक्शन ---
+def load_db():
     if os.path.exists("quiz_database.json"):
         with open("quiz_database.json", "r", encoding="utf-8") as f:
             try: return json.load(f)
@@ -52,118 +49,68 @@ def load_database():
     return {}
 
 # --- 5. क्विज़ लॉजिक ---
-async def send_next_question(context: ContextTypes.DEFAULT_TYPE, chat_id):
-    user_data = context.user_data
-    quiz_set = user_data.get('quiz_set', [])
-    index = user_data.get('current_index', 0)
-
-    if index >= len(quiz_set):
-        score = user_data.get('score', 0)
-        await context.bot.send_message(
-            chat_id=chat_id, 
-            text=f"🎊 **क्विज़ संपन्न!** 🎊\n\n📊 स्कोर: `{score}/{len(quiz_set)}`\n\nनया टॉपिक: /start"
-        )
-        user_data['is_busy'] = False
+async def send_q(context, chat_id):
+    ud = context.user_data
+    if ud.get('idx', 0) >= len(ud.get('qs', [])):
+        await context.bot.send_message(chat_id, f"🏆 रिवीजन संपन्न! स्कोर: {ud.get('score', 0)}/{len(ud['qs'])}\n/start")
+        ud['busy'] = False
         return
 
-    q = quiz_set[index]
-    try:
-        message = await context.bot.send_poll(
-            chat_id=chat_id,
-            question=f"✨ ({index+1}/{len(quiz_set)}) {random.choice(q['variations'])}",
-            options=q['options'],
-            type=Poll.QUIZ,
-            correct_option_id=q['answer'],
-            is_anonymous=False,
-            explanation="मेहनत जारी रखें! 📚"
-        )
-        user_data['current_poll_id'] = message.poll.id
-        user_data['current_index'] = index + 1
-    except Exception as e:
-        logger.error(f"Poll error: {e}")
-        user_data['is_busy'] = False
-
-# --- 6. हैंडलर्स ---
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # फोर्स रिसेट यूजर डेटा
-    context.user_data.clear()
-    context.user_data['is_busy'] = False
-    context.user_data['score'] = 0
-    
-    db = load_database()
-    if not db:
-        await update.message.reply_text("❌ डेटाबेस नहीं मिला।")
-        return
-
-    icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "💎", "🔥", "🌈"]
-    keyboard = [[InlineKeyboardButton(f"{random.choice(icons)} {t} {random.choice(icons)}", callback_data=t)] for t in db.keys()]
-    
-    await update.message.reply_text(
-        "🎯 **रिवीजन मेनू**\n\nअपना टॉपिक चुनें और शुरू करें:",
-        reply_markup=InlineKeyboardMarkup(keyboard)
+    q = ud['qs'][ud['idx']]
+    msg = await context.bot.send_poll(
+        chat_id=chat_id, question=f"✨ ({ud['idx']+1}/{len(ud['qs'])}) {random.choice(q['variations'])}",
+        options=q['options'], type=Poll.QUIZ, correct_option_id=q['answer'],
+        is_anonymous=False, explanation="पढ़ते रहें! 📚"
     )
+    ud['poll_id'] = msg.poll.id
+    ud['idx'] += 1
 
-async def handle_topic_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    db = load_db()
+    if not db:
+        await update.message.reply_text("❌ डेटाबेस नहीं मिला!")
+        return
+    icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "💎", "🔥"]
+    keyboard = [[InlineKeyboardButton(f"{random.choice(icons)} {t} {random.choice(icons)}", callback_data=t)] for t in db.keys()]
+    await update.message.reply_text("🎯 **रिवीजन मेनू**", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def handle_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    
-    topic_name = query.data
-    db = load_database()
-    all_qs = db.get(topic_name, [])
-    if not all_qs: return
-
-    selected_qs = random.sample(all_qs, min(len(all_qs), 20))
-    context.user_data.update({
-        'quiz_set': selected_qs, 'current_index': 0, 'is_busy': True, 
-        'chat_id': query.message.chat_id, 'score': 0
-    })
-
+    db = load_db()
+    topic_data = db.get(query.data, [])
+    if not topic_data: return
+    qs = random.sample(topic_data, min(len(topic_data), 20))
+    context.user_data.update({'qs': qs, 'idx': 0, 'score': 0, 'busy': True, 'chat_id': query.message.chat_id})
     await query.delete_message()
-    await context.bot.send_message(chat_id=query.message.chat_id, text=f"🚀 **{topic_name} क्विज़ शुरू!**")
-    await send_next_question(context, query.message.chat_id)
+    await send_q(context, query.message.chat_id)
 
-async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    poll_answer = update.poll_answer
-    user_data = context.user_data
+async def handle_ans(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    ans = update.poll_answer
+    ud = context.user_data
+    if ud.get('busy') and ud.get('poll_id') == ans.poll_id:
+        if ans.option_ids[0] == ud['qs'][ud['idx']-1]['answer']: ud['score'] += 1
+        await asyncio.sleep(1)
+        await send_q(context, ud.get('chat_id'))
 
-    if user_data.get('is_busy') and user_data.get('current_poll_id') == poll_answer.poll_id:
-        idx = user_data['current_index'] - 1
-        if poll_answer.option_ids[0] == user_data['quiz_set'][idx]['answer']:
-            user_data['score'] += 1
-        await asyncio.sleep(1.2)
-        await send_next_question(context, user_data.get('chat_id'))
+# --- 6. MAIN ---
+def main():
+    # Health server को अलग thread में चलाना
+    threading.Thread(target=run_health_server, daemon=True).start()
 
-# --- 7. MAIN RUNNER ---
-async def run_bot():
-    if not TELEGRAM_BOT_TOKEN:
-        logger.error("Token Not Found!")
-        return
+    # Application बनाना
+    app = Application.builder().token(TOKEN).build()
     
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # सबसे ज़रूरी: पुराने सभी कनेक्शन और वेबहुक साफ़ करना
-    await app.bot.delete_webhook(drop_pending_updates=True)
-    
+    # हैंडलर्स जोड़ना
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_topic_selection))
-    app.add_handler(PollAnswerHandler(handle_answer))
-    
-    await app.initialize()
-    await app.start()
-    
-    # drop_pending_updates=True पुराने अटके हुए मैसेज को डिलीट कर देगा
-    await app.updater.start_polling(drop_pending_updates=True)
-    logger.info("Bot is Polling...")
-    
-    while True:
-        await asyncio.sleep(3600)
+    app.add_handler(CallbackQueryHandler(handle_topic))
+    app.add_handler(PollAnswerHandler(handle_ans))
+
+    print("Bot is starting polling...")
+    # run_polling() अपने आप लूप और स्टॉप को हैंडल करता है
+    # drop_pending_updates=True पुराने अटके हुए "Conflict" वाले मैसेज साफ़ कर देगा
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == '__main__':
-    # Health Server को अलग थ्रेड में शुरू करना
-    threading.Thread(target=run_health_server, daemon=True).start()
-    
-    try:
-        asyncio.run(run_bot())
-    except Exception as e:
-        logger.error(f"Fatal Error: {e}")
-        sys.exit(1)
+    main()
