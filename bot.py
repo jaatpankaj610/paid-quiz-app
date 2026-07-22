@@ -1,138 +1,185 @@
 import os
-import sys
+import random
+import requests
+import json
 import logging
 import threading
-import asyncio
-import json
-import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from google import genai
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
-# 1. लॉगिंग
-logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+# लॉगिंग सेटअप
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# 2. क्रेडेंशियल्स (Render Environment Variables से)
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+# क्रेडेंशियल्स
+TELEGRAM_BOT_TOKEN = ""
+GEMINI_API_KEY = "AQ.Ab8RN6I8NtXy-q7H3WQPXGnJrpbTXsXrwLjA1Vs80h9YCxkccw"
 
-try:
-    ai_client = genai.Client(api_key=GEMINI_API_KEY)
-except Exception as e:
-    logger.error(f"AI Setup Error: {e}")
+# Gemini क्लाइंट
+ai_client = genai.Client(api_key=GEMINI_API_KEY)
 
-# 3. हेल्थ सर्वर (Render के लिए)
+# यूजर मेमोरी
+USER_SEEN_FACTS = {}
+
+# --- Render Health Check Server ---
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
+        self.send_header("Content-type", "text/plain")
         self.end_headers()
-        self.wfile.write(b"Quiz Bot is Online")
-    def log_message(self, format, *args): return
+        self.wfile.write(b"Bot is alive!")
 
-def run_health_server():
-    httpd = HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 10000))), HealthCheckHandler)
-    httpd.serve_forever()
+def run_health_check_server():
+    # Render हमेशा PORT नाम का एनवायरनमेंट वेरिएबल देता है, डिफ़ॉल्ट 8080 रखेंगे
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), HealthCheckHandler)
+    logger.info(f"Health check server started on port {port}")
+    server.serve_forever()
 
-# --- 4. AI QUIZ GENERATION (FIXED SYNTAX) ---
-
-def load_user_facts():
-    try:
-        if os.path.exists("facts.json"):
-            with open("facts.json", "r", encoding="utf-8") as f:
-                data = json.load(f)
-                return "\n".join(data) if isinstance(data, list) else str(data)
-    except: pass
-    return "भारत का सामान्य ज्ञान और इतिहास।"
-
-async def generate_quiz_ai():
-    user_facts = load_user_facts()
-    
-    # यहाँ गलती थी, हमने {{ }} डबल ब्रैकेट लगाए हैं ताकि Python एरर न दे
-    prompt = f"""
-    तुम्हें नीचे दिए गए तथ्यों (Facts) का उपयोग करके 10 बेहतरीन GK MCQs तैयार करने हैं।
-    तथ्य: {user_facts}
-    
-    नियम:
-    1. 'ड़' की जगह हमेशा 'ड' का प्रयोग करें।
-    2. आउटपुट केवल एक शुद्ध JSON Array होना चाहिए।
-    Format: [{{ "question": "...", "options": ["A", "B", "C", "D"], "answer": 0 }}]
-    """
-    try:
-        response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-        match = re.search(r'\[.*\]', response.text, re.DOTALL)
-        if match:
-            return json.loads(match.group())
-        return None
-    except Exception as e:
-        logger.error(f"AI Generation Error: {e}")
-        return None
-
-# --- 5. BOT HANDLERS ---
-
+# --- Bot Functions ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 राम राम भाई! क्विज़ के लिए /test दबाएँ।")
+    user_id = str(update.message.from_user.id)
+    USER_SEEN_FACTS[user_id] = []
+    await update.message.reply_text(
+        "👋 राम राम भाई! आपका स्मार्ट फैक्ट-टू-क्विज बोट तैयार है।\n\n"
+        "⏱️ शुरू करने के लिए `/test` या `/startquiz` कमांड दबाएं।"
+    )
+
+async def generate_live_quiz(facts_list):
+    prompt = f"""
+    तुम्हें नीचे दिए गए तथ्यों (Facts) का उपयोग करके 20 बेहतरीन परीक्षा-उपयोगी (Exam-Oriented) बहुविकल्पीय प्रश्न (MCQs) तैयार करने हैं।
+    प्रत्येक फैक्ट से एक प्रश्न बनाना है।
+    
+    सख्त नियम:
+    1. उच्चारण शुद्ध रखने के लिए हिंदी अक्षर 'ड़' की जगह हमेशा 'ड' का प्रयोग करें (जैसे 'बड़ा' की जगह 'बडा', 'पकड़' की जगह 'पकड').
+    2. आउटपुट केवल और केवल एक वैध JSON Array होना चाहिए, जिसमें कोई अतिरिक्त टेक्स्ट या ```json ``` ब्लॉक न हो।
+    
+    JSON का फॉर्मेट:
+    [
+      {{
+        "question_text": "प्रश्न यहाँ...",
+        "options": ["A) विकल्प 1", "B) विकल्प 2", "C) विकल्प 3", "D) विकल्प 4"],
+        "correct_option": "A"
+      }}
+    ]
+
+    तथ्य (Facts) यहाँ हैं:
+    {json.dumps(facts_list, ensure_ascii=False)}
+    """
+    response = ai_client.models.generate_content(
+        model='gemini-1.5-flash',
+        contents=prompt,
+    )
+    return json.loads(response.text.strip())
 
 async def start_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if context.user_data.get('is_generating'): return 
+    user_id = str(update.message.from_user.id)
+    message = update.message
+    await message.reply_text("🔄 AI से नए सवाल बनवा रहा हूँ, कृपया 10-15 सेकंड रुकें...")
 
-    context.user_data['is_generating'] = True
-    msg = await update.message.reply_text("⏳ AI सवाल तैयार कर रहा है... कृपया 15-20 सेकंड रुकें।")
+    try:
+        res = requests.get("https://raw.githubusercontent.com/jaatpankaj610/paid-quiz-app/refs/heads/main/facts.json")
+        all_facts = res.json()
+        
+        seen_list = USER_SEEN_FACTS.get(user_id, [])
+        unseen_facts = [f for f in all_facts if f not in seen_list]
+        
+        if len(unseen_facts) < 20:
+            unseen_facts = all_facts
+            seen_list = []
+            await message.reply_text("🔄 progress reset हो रही है, दोबारा नए सिरे से सवाल आएंगे।")
+
+        selected_facts = random.sample(unseen_facts, min(20, len(unseen_facts)))
+        seen_list.extend(selected_facts)
+        USER_SEEN_FACTS[user_id] = seen_list
+
+        quiz_data = await generate_live_quiz(selected_facts)
+        
+        context.user_data['quiz_questions'] = quiz_data
+        context.user_data['current_index'] = 0
+        context.user_data['score'] = 0
+        
+        await send_next_question(message, context)
+    except Exception as e:
+        await message.reply_text(f"❌ गड़बड़ हो गई भाई! Error: {str(e)[:100]}")
+
+async def send_next_question(message, context: ContextTypes.DEFAULT_TYPE):
+    questions = context.user_data.get('quiz_questions', [])
+    index = context.user_data.get('current_index', 0)
     
-    quiz_data = await generate_quiz_ai()
-    
-    context.user_data['is_generating'] = False
-    if not quiz_data:
-        await msg.edit_text("❌ AI अभी बिजी है। कृपया 30 सेकंड बाद फिर से /test दबाएँ।")
+    if index >= len(questions):
+        score = context.user_data.get('score', 0)
+        await message.reply_text(f"🏁 **टेस्ट समाप्त भाई!**\n\n📊 आपका स्कोर: {score}/{len(questions)}\n\nअगले नए सवालों के लिए फिर से `/test` दबाएं।")
         return
 
-    context.user_data.update({'quiz': quiz_data, 'current_q': 0, 'score': 0})
-    await show_question(update, context, msg)
+    q = questions[index]
+    text = f"📝 **प्रश्न {index + 1}:** {q['question_text']}\n\n"
+    for opt in q['options']:
+        text += f"{opt}\n"
 
-async def show_question(update: Update, context: ContextTypes.DEFAULT_TYPE, message_obj=None):
-    idx = context.user_data['current_q']
-    q = context.user_data['quiz'][idx]
-    buttons = [[InlineKeyboardButton(opt, callback_data=str(i))] for i, opt in enumerate(q['options'])]
-    reply_markup = InlineKeyboardMarkup(buttons)
-    text = f"❓ **सवाल {idx+1}/10**\n\n{q['question']}"
-    if message_obj: await message_obj.edit_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-    else: await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    keyboard = [
+        [InlineKeyboardButton("A", callback_data=f"ans_A_{q['correct_option']}"),
+         InlineKeyboardButton("B", callback_data=f"ans_B_{q['correct_option']}")],
+        [InlineKeyboardButton("C", callback_data=f"ans_C_{q['correct_option']}"),
+         InlineKeyboardButton("D", callback_data=f"ans_D_{q['correct_option']}")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if hasattr(message, 'edit_text'):
+        await message.edit_text(text, reply_markup=reply_markup)
+    else:
+        await message.reply_text(text, reply_markup=reply_markup)
 
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    if 'quiz' not in context.user_data: return
     await query.answer()
     
-    user_ans = int(query.data)
-    idx = context.user_data['current_q']
-    quiz = context.user_data['quiz']
-    correct = quiz[idx]['answer']
-
-    res = "✅ सही!" if user_ans == correct else f"❌ गलत! सही: {quiz[idx]['options'][correct]}"
-    if user_ans == correct: context.user_data['score'] += 1
-
-    context.user_data['current_q'] += 1
-    if context.user_data['current_q'] < len(quiz):
-        await query.message.edit_text(f"{res}\n\nअगला सवाल आ रहा है...")
-        await asyncio.sleep(1)
-        await show_question(update, context)
+    data = query.data.split('_')
+    user_choice = data[1]
+    correct_choice = data[2]
+    
+    index = context.user_data.get('current_index', 0)
+    questions = context.user_data.get('quiz_questions', [])
+    q = questions[index]
+    
+    if user_choice == correct_choice:
+        context.user_data['score'] += 1
+        result_text = f"✅ **सही उत्तर भाई!**\n\n"
     else:
-        await query.message.edit_text(f"🏆 टेस्ट पूरा! स्कोर: {context.user_data['score']}/10\n\nनया टेस्ट: /test")
+        result_text = f"❌ **गलत जवाब!**\n\n👉 सही उत्तर **{correct_choice}** था।\n\n"
+        
+    full_text = f"📝 **प्रश्न {index + 1}:** {q['question_text']}\n"
+    for opt in q['options']:
+        full_text += f"\n{opt}"
+    full_text += f"\n\n--- \n{result_text}"
+    
+    keyboard = [[InlineKeyboardButton("अगला प्रश्न ➡️", callback_data="next_question")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text=full_text, reply_markup=reply_markup)
 
-async def run_bot():
-    app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("test", start_test))
-    app.add_handler(CallbackQueryHandler(handle_answer))
-    async with app:
-        await app.initialize()
-        await app.start()
-        await app.updater.start_polling(drop_pending_updates=True)
-        while True: await asyncio.sleep(3600)
+async def next_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    context.user_data['current_index'] += 1
+    await send_next_question(query.message, context)
+
+def main():
+    # बोट शुरू होने से ठीक पहले बैकग्राउंड में हेल्थ चेक सर्वर चालू करना ताकि Render खुश रहे
+    threading.Thread(target=run_health_check_server, daemon=True).start()
+
+    # बोट एप्लीकेशन सेटअप
+    application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("test", start_test))
+    application.add_handler(CommandHandler("startquiz", start_test))
+    application.add_handler(CallbackQueryHandler(next_callback, pattern="^next_question$"))
+    application.add_handler(CallbackQueryHandler(handle_answer, pattern="^ans_"))
+    
+    logger.info("Starting Telegram Bot Polling...")
+    application.run_polling()
 
 if __name__ == '__main__':
-    threading.Thread(target=run_health_server, daemon=True).start()
-    try:
-        asyncio.run(run_bot())
-    except: sys.exit(1)
+    main()
