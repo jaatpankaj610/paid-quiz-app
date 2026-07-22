@@ -23,7 +23,7 @@ try:
 except Exception as e:
     logger.error(f"AI Setup Error: {e}")
 
-# 3. हेल्थ सर्वर (Render के लिए)
+# 3. हेल्थ सर्वर
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -44,92 +44,107 @@ def load_user_facts():
                 data = json.load(f)
                 return "\n".join(data) if isinstance(data, list) else str(data)
     except: pass
-    return "भारत का इतिहास और सामान्य ज्ञान।"
+    return "भारत का इतिहास, भूगोल और सामान्य ज्ञान।"
 
 async def generate_20_questions():
     user_facts = load_user_facts()
     
-    # Prompt for 20 questions
+    # Updated Prompt for better JSON reliability
     prompt = f"""
-    तुम्हें नीचे दिए गए तथ्यों (Facts) का उपयोग करके 20 बेहतरीन GK MCQs तैयार करने हैं।
-    तथ्य: {user_facts}
-    
-    नियम:
-    1. 'ड़' की जगह हमेशा 'ड' का प्रयोग करें।
-    2. आउटपुट केवल एक शुद्ध JSON Array होना चाहिए।
-    Format: [{{ "question": "...", "options": ["A", "B", "C", "D"], "answer": 0 }}]
+    Generate 20 GK MCQs in Hindi based on these facts: {user_facts}.
+    Return ONLY a JSON array. No conversational text.
+    Use 'ड' instead of 'ड़'.
+    Format: [{"question": "...", "options": ["A", "B", "C", "D"], "answer": 0}]
     """
+    
     try:
-        response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-        match = re.search(r'\[.*\]', response.text, re.DOTALL)
+        response = ai_client.models.generate_content(
+            model='gemini-1.5-flash', 
+            contents=prompt
+        )
+        
+        raw_text = response.text.strip()
+        # Clean the response to find the JSON array
+        match = re.search(r'\[.*\]', raw_text, re.DOTALL)
         if match:
-            return json.loads(match.group())
-        return None
+            json_str = match.group()
+            return json.loads(json_str)
+        else:
+            logger.error(f"No JSON found in response: {raw_text}")
+            return None
     except Exception as e:
         logger.error(f"AI Generation Error: {e}")
         return None
 
 # --- 5. BOT HANDLERS ---
 
-# Global lock to ignore other commands
 is_bot_busy = False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_bot_busy
     
     if is_bot_busy:
-        return # Ignore if already processing
+        return # Ignore any commands while busy
 
     is_bot_busy = True
-    status_msg = await update.message.reply_text("🚀 AI 20 सवाल तैयार कर रहा है... कृपया प्रतीक्षा करें। अब कोई और कमांड काम नहीं करेगी।")
+    user_id = update.effective_user.id
+    
+    status_msg = await update.message.reply_text("⏳ AI 20 सवाल तैयार कर रहा है... इसमें 30 सेकंड लग सकते हैं।\n\nकृपया इंतज़ार करें, बाकी कमांड्स अभी बंद हैं।")
 
     quiz_data = await generate_20_questions()
 
     if not quiz_data:
-        await status_msg.edit_text("❌ माफ़ी चाहता हूँ, AI सवाल नहीं बना पाया। कृपया थोड़ी देर बाद /start करें।")
+        await status_msg.edit_text("❌ AI से संपर्क नहीं हो पाया या डाटा गलत मिला। कृपया एक बार फिर /start टाइप करें।")
         is_bot_busy = False
         return
 
-    # Prepare the big message with all 20 questions
+    # Process and Send Questions
+    await status_msg.delete() # Delete the "Processing" message
+    
     full_quiz_text = "📝 **GK QUIZ - 20 QUESTIONS** 📝\n\n"
     
     for i, q in enumerate(quiz_data, 1):
-        full_quiz_text += f"❓ **सवाल {i}:** {q['question']}\n"
-        opts = ["A", "B", "C", "D"]
-        for idx, opt in enumerate(q['options']):
-            full_quiz_text += f"   {opts[idx]}) {opt}\n"
-        
-        # Adding correct answer hiddenly or at the end (Optional)
-        correct_opt = opts[q['answer']]
-        full_quiz_text += f"✅ **उत्तर:** {correct_opt}\n\n"
-
-        # Telegram message limit check (4096 chars)
-        if len(full_quiz_text) > 3500:
-            await update.message.reply_text(full_quiz_text, parse_mode='Markdown')
-            full_quiz_text = ""
+        try:
+            q_text = f"❓ **सवाल {i}:** {q['question']}\n"
+            opts = ["A", "B", "C", "D"]
+            for idx, opt in enumerate(q['options']):
+                q_text += f"   {opts[idx]}) {opt}\n"
+            
+            correct_ans = opts[q['answer']]
+            q_text += f"✅ **सही उत्तर:** {correct_ans}\n\n"
+            
+            # Agar message bada ho jaye to bhej do aur naya start karo
+            if len(full_quiz_text) + len(q_text) > 3800:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=full_quiz_text, parse_mode='Markdown')
+                full_quiz_text = ""
+            
+            full_quiz_text += q_text
+        except Exception as e:
+            logger.error(f"Error formatting question {i}: {e}")
 
     if full_quiz_text:
-        await update.message.reply_text(full_quiz_text, parse_mode='Markdown')
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=full_quiz_text, parse_mode='Markdown')
 
     # Final Screen
-    await update.message.reply_text("🏆 **टेस्ट पूरा हुआ!**\n\nसभी 20 सवाल ऊपर दिए गए हैं। अब आप दोबारा /start कर सकते हैं।")
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id, 
+        text="🏆 **सभी 20 सवाल ऊपर दे दिए गए हैं!**\n\nअब आप दोबारा /start कर सकते हैं।"
+    )
     
     is_bot_busy = False # Unlock the bot
 
 async def ignore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """This function catches all other messages when the bot is busy."""
     global is_bot_busy
     if is_bot_busy:
-        # Don't do anything, just ignore
-        return
+        return # Do nothing
 
 async def run_bot():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Handlers
+    # First priority: start command
     app.add_handler(CommandHandler("start", start))
     
-    # Catch all other messages/commands and ignore them
+    # Second priority: ignore everything else when busy
     app.add_handler(MessageHandler(filters.ALL, ignore_all), group=1)
 
     async with app:
@@ -142,4 +157,5 @@ if __name__ == '__main__':
     threading.Thread(target=run_health_server, daemon=True).start()
     try:
         asyncio.run(run_bot())
-    except: sys.exit(1)
+    except (KeyboardInterrupt, SystemExit):
+        pass
