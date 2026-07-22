@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 # 2. कॉन्फ़िगरेशन
 TOKEN = "7467353478:AAH9kSAgaEbz3oXjFMbY6w53bqoq4Z2Ssyk"
 GITHUB_URL = "https://raw.githubusercontent.com/jaatpankaj610/paid-quiz-app/main/quiz_database.json"
-# आपके स्क्रीनशॉट से मिला URL
+# आपका Render URL
 WEBHOOK_URL = f"https://bankerbot-mdzw.onrender.com/{TOKEN}"
 
 # 3. डाटाबेस लोडर
@@ -28,8 +28,10 @@ def load_db():
 
 # 4. क्विज़ लॉजिक
 async def send_q(context, chat_id):
+    # डेटा सुरक्षित तरीके से निकालें
     ud = context.application.user_data.get(chat_id)
-    if not ud or 'qs' not in ud: return
+    if not ud or 'qs' not in ud:
+        return
 
     idx = ud.get('idx', 0)
     qs = ud['qs']
@@ -41,22 +43,26 @@ async def send_q(context, chat_id):
         return
 
     q = qs[idx]
-    msg = await context.bot.send_poll(
-        chat_id=chat_id,
-        question=f"✨ ({idx+1}/{len(qs)}) {random.choice(q['variations'])}",
-        options=q['options'],
-        type=Poll.QUIZ,
-        correct_option_id=q['answer'],
-        is_anonymous=False,
-        explanation="मेहनत का फल मीठा होता है! 📚"
-    )
-    ud['poll_id'] = msg.poll.id
-    ud['idx'] = idx + 1
+    try:
+        msg = await context.bot.send_poll(
+            chat_id=chat_id,
+            question=f"✨ ({idx+1}/{len(qs)}) {random.choice(q['variations'])}",
+            options=q['options'],
+            type=Poll.QUIZ,
+            correct_option_id=q['answer'],
+            is_anonymous=False,
+            explanation="मेहनत का फल मीठा होता है! 📚"
+        )
+        ud['poll_id'] = msg.poll.id
+        ud['idx'] = idx + 1
+    except Exception as e:
+        logger.error(f"Error sending poll: {e}")
 
 # 5. हैंडलर्स
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    context.application.user_data[chat_id] = {'busy': False}
+    # यूजर डेटा को रीसेट करें
+    context.application.user_data[chat_id] = {'busy': False, 'score': 0, 'idx': 0}
     
     db = load_db()
     if not db:
@@ -75,10 +81,19 @@ async def handle_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     db = load_db()
     topic_data = db.get(query.data, [])
-    if not topic_data: return
+    if not topic_data: 
+        return
 
+    # रैंडम सवाल चुनें
     qs = random.sample(topic_data, min(len(topic_data), 20))
-    context.application.user_data[chat_id] = {'qs': qs, 'idx': 0, 'score': 0, 'busy': True, 'chat_id': chat_id}
+    # डेटा स्टोर करें
+    context.application.user_data[chat_id] = {
+        'qs': qs, 
+        'idx': 0, 
+        'score': 0, 
+        'busy': True, 
+        'chat_id': chat_id
+    }
     
     await query.delete_message()
     await send_q(context, chat_id)
@@ -92,27 +107,32 @@ async def handle_ans(update: Update, context: ContextTypes.DEFAULT_TYPE):
         idx = ud['idx'] - 1
         if ans.option_ids[0] == ud['qs'][idx]['answer']:
             ud['score'] += 1
+        
+        # थोड़ा इंतज़ार करके अगला सवाल भेजें
         await asyncio.sleep(1)
         await send_q(context, user_id)
 
-# 6. MAIN
+# 6. MAIN FUNCTION
 def main():
+    # Application बिल्ड करें
     application = Application.builder().token(TOKEN).build()
     
+    # हैंडलर्स जोड़ें
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(handle_topic))
     application.add_handler(PollAnswerHandler(handle_ans))
 
-    # Render के लिए पोर्ट सेट करना
+    # पोर्ट सेट करें (Render के लिए अनिवार्य)
     port = int(os.environ.get("PORT", 10000))
 
-    print("Starting Webhook...")
+    # वेबहूक चालू करें
+    # drop_pending_updates=True पुराने सारे झगड़ों को खत्म कर देगा
     application.run_webhook(
         listen="0.0.0.0",
         port=port,
         url_path=TOKEN,
         webhook_url=WEBHOOK_URL,
-        drop_pending_updates=True  # यह पुराने सारे Conflicts खत्म कर देगा
+        drop_pending_updates=True
     )
 
 if __name__ == '__main__':
