@@ -7,14 +7,14 @@ import json
 import re
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from google import genai
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-# 1. लॉगिंग
+# 1. Logging
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
 logger = logging.getLogger(__name__)
 
-# 2. क्रेडेंशियल्स
+# 2. Credentials
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
@@ -23,7 +23,7 @@ try:
 except Exception as e:
     logger.error(f"AI Setup Error: {e}")
 
-# 3. हेल्थ सर्वर (Render के लिए)
+# 3. Health Server
 class HealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -35,7 +35,7 @@ def run_health_server():
     httpd = HTTPServer(("0.0.0.0", int(os.environ.get("PORT", 10000))), HealthCheckHandler)
     httpd.serve_forever()
 
-# --- 4. AI QUIZ GENERATION ---
+# --- 4. AI QUIZ GENERATION (BATCH METHOD) ---
 
 def load_user_facts():
     try:
@@ -44,119 +44,94 @@ def load_user_facts():
                 data = json.load(f)
                 return "\n".join(data) if isinstance(data, list) else str(data)
     except: pass
-    return "भारत का इतिहास और सामान्य ज्ञान।"
+    return "भारत का इतिहास, भूगोल और सामान्य ज्ञान।"
 
-async def generate_quiz_ai():
+async def fetch_questions_from_ai(count=10):
+    """AI se sawal mangne ka ek chota function"""
     user_facts = load_user_facts()
-    
-    # अब यहाँ 20 सवाल माँगे गए हैं
     prompt = f"""
-    तुम्हें नीचे दिए गए तथ्यों (Facts) का उपयोग करके बिल्कुल 20 बेहतरीन GK MCQs तैयार करने हैं।
-    तथ्य: {user_facts}
-    
-    नियम:
-    1. 'ड़' की जगह हमेशा 'ड' का प्रयोग करें।
-    2. आउटपुट केवल एक शुद्ध JSON Array होना चाहिए।
-    3. बिल्कुल 20 सवाल ही दें।
-    Format: [{{ "question": "...", "options": ["A", "B", "C", "D"], "answer": 0 }}]
+    Generate {count} GK MCQs in Hindi based on: {user_facts}.
+    Strictly follow:
+    1. Output ONLY a valid JSON array.
+    2. Use 'ड' instead of 'ड़'.
+    3. Format: [{{"question": "...", "options": ["A", "B", "C", "D"], "answer": 0}}]
     """
     try:
         response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-        # JSON निकालने का पक्का तरीका
         match = re.search(r'\[.*\]', response.text, re.DOTALL)
         if match:
             return json.loads(match.group())
-        return None
     except Exception as e:
-        logger.error(f"AI Generation Error: {e}")
-        return None
+        logger.error(f"Batch Error: {e}")
+    return []
 
 # --- 5. BOT HANDLERS ---
 
-# अब /start ही मेन कमांड है जो सीधा 20 सवाल शुरू करेगा
+is_bot_busy = False
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # अगर क्विज़ चल रहा है या सवाल बन रहे हैं, तो कुछ मत करो (इग्नोर कर दो)
-    if context.user_data.get('is_generating') or context.user_data.get('quiz'):
-        return 
+    global is_bot_busy
+    
+    if is_bot_busy:
+        return # Do nothing if already working
 
-    context.user_data['is_generating'] = True
-    msg = await update.message.reply_text("⏳ AI 20 सवाल तैयार कर रहा है... इसमें 20-30 सेकंड लग सकते हैं।")
+    is_bot_busy = True
+    status_msg = await update.message.reply_text("⏳ AI 20 सवाल तैयार कर रहा है (Batch 1/2)...")
+
+    # Batch 1: Pehle 10 sawal
+    batch1 = await fetch_questions_from_ai(10)
     
-    quiz_data = await generate_quiz_ai()
+    await status_msg.edit_text("⏳ AI 20 सवाल तैयार कर रहा है (Batch 2/2)...")
     
-    context.user_data['is_generating'] = False # UNLOCK
-    if not quiz_data:
-        await msg.edit_text("❌ AI अभी बिजी है। कृपया 1 मिनट बाद फिर से /start लिखें।")
+    # Batch 2: Agle 10 sawal
+    batch2 = await fetch_questions_from_ai(10)
+
+    all_questions = batch1 + batch2
+
+    if len(all_questions) < 5: # Agar bahut kam sawal mile
+        await status_msg.edit_text("❌ AI से संपर्क नहीं हो पाया। कृपया दोबारा /start करें।")
+        is_bot_busy = False
         return
 
-    context.user_data.update({'quiz': quiz_data, 'current_q': 0, 'score': 0})
-    await show_question(update, context, msg)
+    await status_msg.delete()
 
-async def show_question(update: Update, context: ContextTypes.DEFAULT_TYPE, message_obj=None):
-    idx = context.user_data['current_q']
-    q = context.user_data['quiz'][idx]
-    buttons = [[InlineKeyboardButton(opt, callback_data=str(i))] for i, opt in enumerate(q['options'])]
-    reply_markup = InlineKeyboardMarkup(buttons)
+    # 20 questions ko format karke bhejna
+    full_text = f"📝 **GK QUIZ: TOTAL {len(all_questions)} QUESTIONS**\n\n"
     
-    # यहाँ 10 की जगह 20 कर दिया गया है
-    text = f"❓ **सवाल {idx+1}/20**\n\n{q['question']}"
-    
-    if message_obj: 
-        await message_obj.edit_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-    else: 
-        await update.callback_query.message.edit_text(text, reply_markup=reply_markup, parse_mode='Markdown')
-
-async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    if 'quiz' not in context.user_data: return
-    await query.answer()
-    
-    user_ans = int(query.data)
-    idx = context.user_data['current_q']
-    quiz = context.user_data['quiz']
-    correct = quiz[idx]['answer']
-
-    res = "✅ सही!" if user_ans == correct else f"❌ गलत! सही: {quiz[idx]['options'][correct]}"
-    if user_ans == correct: context.user_data['score'] += 1
-
-    context.user_data['current_q'] += 1
-    
-    # अगर अभी 20 सवाल पूरे नहीं हुए हैं
-    if context.user_data['current_q'] < len(quiz):
-        await query.message.edit_text(f"{res}\n\nअगला सवाल आ रहा है...")
-        await asyncio.sleep(1)
-        await show_question(update, context)
-    else:
-        # 20वें सवाल के बाद डायरेक्ट स्कोर स्क्रीन
-        score = context.user_data['score']
-        # क्विज़ डेटा हटा दिया जाता है ताकि यूज़र दोबारा /start भेज सके
-        context.user_data.pop('quiz', None)
-        context.user_data.pop('current_q', None)
-        context.user_data.pop('score', None)
+    for i, q in enumerate(all_questions, 1):
+        q_block = f"❓ **सवाल {i}:** {q['question']}\n"
+        opts = ["A", "B", "C", "D"]
+        for idx, opt in enumerate(q['options']):
+            q_block += f"   {opts[idx]}) {opt}\n"
         
-        await query.message.edit_text(
-            f"🏆 क्विज़ पूरा हो गया!\n\n🥇 आपका स्कोर: {score}/20\n\nनया टेस्ट शुरू करने के लिए /start दबाएँ।", 
-            parse_mode='Markdown'
-        )
+        correct = opts[q['answer']]
+        q_block += f"✅ **उत्तर:** {correct}\n\n"
 
-# यह हैंडलर किसी भी दूसरे मैसेज या कमांड को बीच में आने से रोकेगा
-async def ignore_all_other_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # अगर क्विज़ चल रहा है या बन रहा है, तो यूज़र का मैसेज इग्नोर कर दो (कोई रिप्लाई नहीं)
-    if context.user_data.get('is_generating') or context.user_data.get('quiz'):
-        return
-    # अगर कोई बेवजह कुछ टाइप करे जब क्विज़ चल नहीं रहा
-    await update.message.reply_text("कृपया क्विज़ शुरू करने के लिए /start भेजें।")
+        # Telegram length limit check
+        if len(full_text) + len(q_block) > 3900:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=full_text, parse_mode='Markdown')
+            full_text = ""
+        
+        full_text += q_block
+
+    if full_text:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=full_text, parse_mode='Markdown')
+
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id, 
+        text="🏆 **टेस्ट पूरा हुआ!** अब आप दोबारा /start कर सकते हैं।"
+    )
+    
+    is_bot_busy = False
+
+async def ignore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if is_bot_busy: return
 
 async def run_bot():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    
-    # कमांड्स और बटन्स रजिस्टर करना
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(handle_answer))
-    
-    # सबसे नीचे इसे लगाया गया है ताकि अगर कोई टेक्स्ट/कमांड आए और ऊपर किसी हैंडलर ने हैंडल नहीं किया, तो यह इग्नोर कर दे
-    app.add_handler(MessageHandler(filters.ALL, ignore_all_other_messages))
-    
+    app.add_handler(MessageHandler(filters.ALL, ignore_all), group=1)
+
     async with app:
         await app.initialize()
         await app.start()
@@ -167,4 +142,4 @@ if __name__ == '__main__':
     threading.Thread(target=run_health_server, daemon=True).start()
     try:
         asyncio.run(run_bot())
-    except: sys.exit(1)
+    except: pass
