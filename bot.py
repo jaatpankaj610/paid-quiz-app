@@ -14,7 +14,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # क्रेडेंशियल्स
-TELEGRAM_BOT_TOKEN = "7908449655:AAGVk4HYN98rZkJoeTtPIDHsHdmnr1hPG9w"
+TELEGRAM_BOT_TOKEN = "7908449655:AAGVk4HYN98rZkJoeTtPIdHsHdmnrlhPG9w"
 GEMINI_API_KEY = "AQ.Ab8RN6I8NtXy-q7H3WQPXGnJrpbTXsXrwLjA1Vs80h9YCxkccw"
 
 # Gemini Setup
