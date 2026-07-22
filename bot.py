@@ -1,8 +1,8 @@
 import os
-import json
-import random
+import sys
 import logging
 import asyncio
+import json
 import re
 from google import genai
 from telegram import Update
@@ -21,37 +21,45 @@ try:
 except Exception as e:
     logger.error(f"AI Setup Error: {e}")
 
-# --- 3. फाइल मैनेजमेंट ---
+# --- 3. FACTS लोड करने का फंक्शन ---
 
-def load_json(filename):
-    if os.path.exists(filename):
-        with open(filename, "r", encoding="utf-8") as f:
-            try: return json.load(f)
-            except: return []
-    return []
-
-def save_json(filename, data):
-    with open(filename, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-
-# --- 4. AI से छोटे बैच में सवाल मांगना ---
-
-async def fetch_mini_batch(count=5):
-    """AI से सिर्फ 5 सवाल मांगना (सबसे सुरक्षित तरीका)"""
+def load_user_facts():
     try:
-        facts = str(load_json("facts.json"))[:3000]
-        prompt = f"""
-        Generate {count} GK questions in Hindi based on these facts: {facts}
-        Return ONLY a JSON array. 
-        Format: [{{"question": "..", "options": ["A", "B", "C", "D"], "answer": 0}}]
-        """
-        response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
-        text = response.text.replace("```json", "").replace("```", "").strip()
-        match = re.search(r'\[.*\]', text, re.DOTALL)
-        if match:
-            return json.loads(match.group())
+        if os.path.exists("facts.json"):
+            with open("facts.json", "r", encoding="utf-8") as f:
+                data = json.load(f)
+                # आपकी फाइल एक लिस्ट है, इसे एक पैराग्राफ में बदल रहे हैं
+                if isinstance(data, list):
+                    return " ".join(data)
+                return str(data)
     except Exception as e:
-        logger.error(f"Mini Batch Error: {e}")
+        logger.error(f"File Load Error: {e}")
+    return "भारत का सामान्य ज्ञान।"
+
+# --- 4. AI से सवाल मँगवाने का पक्का तरीका ---
+
+async def get_questions_ai_retry(count=10):
+    user_facts = load_user_facts()
+    
+    prompt = f"""
+    तुम्हें इन तथ्यों का उपयोग करके {count} GK MCQs तैयार करने हैं: {user_facts}
+    नियम:
+    1. भाषा: हिंदी।
+    2. 'ड़' की जगह 'ड' का प्रयोग करें।
+    3. आउटपुट सिर्फ एक शुद्ध JSON Array होना चाहिए।
+    Format: [{{"question": "...", "options": ["A", "B", "C", "D"], "answer": 0}}]
+    """
+
+    for attempt in range(3): # 3 बार कोशिश करेगा
+        try:
+            response = ai_client.models.generate_content(model='gemini-1.5-flash', contents=prompt)
+            raw_text = response.text.replace("```json", "").replace("```", "").strip()
+            match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+            if match:
+                return json.loads(match.group())
+        except Exception as e:
+            logger.warning(f"Attempt {attempt+1} failed. Retrying...")
+            await asyncio.sleep(2)
     return []
 
 # --- 5. BOT HANDLERS ---
@@ -60,58 +68,74 @@ is_bot_busy = False
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_bot_busy
-    if is_bot_busy: return
-
-    bank = load_json("quiz_bank.json")
-    if len(bank) < 20:
-        await update.message.reply_text("⚠️ बैंक खाली है! पहले /update_bank चलायें।")
-        return
+    
+    if is_bot_busy:
+        return # जब तक काम चल रहा है, कुछ न करें
 
     is_bot_busy = True
-    quiz_data = random.sample(bank, 20)
+    status_msg = await update.message.reply_text("🚀 AI आपकी फाइल से 20 सवाल तैयार कर रहा है... कृपया प्रतीक्षा करें।")
+
+    # 20 सवाल (10-10 के दो छोटे बैच में ताकि एरर न आए)
+    all_questions = []
     
-    full_text = "🚀 **GK QUIZ (20 QUESTIONS)** 🚀\n\n"
-    for i, q in enumerate(quiz_data, 1):
-        q_text = f"❓ **Q{i}:** {q['question']}\n"
-        opts = ["A", "B", "C", "D"]
-        for idx, opt in enumerate(q['options']):
-            q_text += f"   {opts[idx]}) {opt}\n"
-        q_text += f"✅ **Ans:** {opts[q['answer']]}\n\n"
-        
-        if len(full_text) + len(q_text) > 3800:
-            await update.message.reply_text(full_text, parse_mode='Markdown')
-            full_text = ""
-        full_text += q_text
-
-    if full_text: await update.message.reply_text(full_text, parse_mode='Markdown')
-    await update.message.reply_text("🏆 टेस्ट पूरा हुआ! नए सवालों के लिए /start भेजें।")
-    is_bot_busy = False
-
-async def update_bank_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Admin command to populate the bank in small steps"""
-    msg = await update.message.reply_text("⏳ बैंक अपडेट हो रहा है (4 चरणों में)...")
+    batch1 = await get_questions_ai_retry(10)
+    if batch1: all_questions.extend(batch1)
     
-    total_added = 0
-    for i in range(1, 5): # 4 बार 5-5 सवाल मांगेगा = कुल 20 सवाल
-        await msg.edit_text(f"⏳ चरण {i}/4: AI सवाल बना रहा है...")
-        new_qs = await fetch_mini_batch(5)
-        if new_qs:
-            current_bank = load_json("quiz_bank.json")
-            save_json("quiz_bank.json", current_bank + new_qs)
-            total_added += len(new_qs)
-        await asyncio.sleep(1) # AI को आराम देने के लिए
+    # थोडा सा गैप AI को शांति देने के लिए
+    await asyncio.sleep(1)
+    
+    batch2 = await get_questions_ai_retry(10)
+    if batch2: all_questions.extend(batch2)
 
-    await msg.edit_text(f"✅ बैंक अपडेट पूरा! {total_added} नए सवाल जोड़े गए। अब /start चलायें।")
+    if not all_questions:
+        await status_msg.edit_text("❌ AI अभी व्यस्त है, कृपया 1 मिनट बाद फिर से /start करें।")
+        is_bot_busy = False
+        return
+
+    await status_msg.delete()
+
+    # सवालों को सजाकर भेजना
+    full_text = "📝 **GK QUIZ - 20 QUESTIONS** 📝\n\n"
+    
+    for i, q in enumerate(all_questions, 1):
+        try:
+            q_block = f"❓ **सवाल {i}:** {q['question']}\n"
+            opts = ["A", "B", "C", "D"]
+            for idx, opt in enumerate(q['options']):
+                q_block += f"   {opts[idx]}) {opt}\n"
+            
+            correct_ans = opts[q['answer']]
+            q_block += f"✅ **सही उत्तर:** {correct_ans}\n\n"
+
+            # अगर मैसेज बहुत लम्बा हो रहा है तो भेज दें
+            if len(full_text) + len(q_block) > 3900:
+                await context.bot.send_message(chat_id=update.effective_chat.id, text=full_text, parse_mode='Markdown')
+                full_text = ""
+            
+            full_text += q_block
+        except: continue
+
+    if full_text:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=full_text, parse_mode='Markdown')
+
+    # आखिरी स्क्रीन
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id, 
+        text="🏆 **टेस्ट पूरा हुआ!**\n\nसभी 20 सवाल ऊपर दे दिए गए हैं। अब आप दोबारा /start कर सकते हैं।"
+    )
+    
+    is_bot_busy = False # अब बोट अगली कमांड के लिए तैयार है
 
 async def ignore_all(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if is_bot_busy: return
+    if is_bot_busy:
+        return # प्रोसेसिंग के दौरान कुछ भी न सुनें
 
 async def run_bot():
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("update_bank", update_bank_command))
-    app.add_handler(MessageHandler(filters.ALL, ignore_all), group=1)
     
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.ALL, ignore_all), group=1)
+
     async with app:
         await app.initialize()
         await app.start()
@@ -119,5 +143,7 @@ async def run_bot():
         while True: await asyncio.sleep(3600)
 
 if __name__ == '__main__':
-    try: asyncio.run(run_bot())
-    except: exit(1)
+    try:
+        asyncio.run(run_bot())
+    except:
+        sys.exit(1)
