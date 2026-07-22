@@ -4,6 +4,7 @@ import random
 import logging
 import asyncio
 import requests
+import time
 from telegram import Update, Poll, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, PollAnswerHandler, ContextTypes
 
@@ -12,24 +13,30 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 logger = logging.getLogger(__name__)
 
 # 2. कॉन्फ़िगरेशन
-TOKEN = "7467353478:AAH9kSAgaEbz3oXjFMbY6w53bqoq4Z2Ssyk"
+TOKEN = "7908449655:AAGVk4HYN98rZkJoeTtPIdHsHdmnrlhPG9w"
 GITHUB_URL = "https://raw.githubusercontent.com/jaatpankaj610/paid-quiz-app/main/quiz_database.json"
 WEBHOOK_URL = f"https://bankerbot-mdzw.onrender.com/{TOKEN}"
 
-# 3. डाटाबेस लोडर
-def load_db():
-    try:
-        r = requests.get(GITHUB_URL)
-        return r.json()
-    except Exception as e:
-        logger.error(f"DB Load Error: {e}")
-        return {}
+# --- ग्लोबल मेमोरी (सवालों को लोड करने के लिए) ---
+DB_CACHE = {}
 
-# 4. क्विज़ लॉजिक
+def sync_db():
+    """GitHub से डेटा खींचकर याददाश्त (Memory) में डालता है"""
+    global DB_CACHE
+    try:
+        r = requests.get(GITHUB_URL, timeout=15)
+        if r.status_code == 200:
+            DB_CACHE = r.json()
+            logger.info(f"डेटाबेस सिंक सफल! {len(DB_CACHE)} टॉपिक्स लोड हुए।")
+            return True
+    except Exception as e:
+        logger.error(f"Sync Error: {e}")
+        return False
+
+# 3. क्विज़ लॉजिक
 async def send_q(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     ud = context.user_data
-    if not ud or 'qs' not in ud:
-        return
+    if not ud or 'qs' not in ud: return
 
     idx = ud.get('idx', 0)
     qs = ud['qs']
@@ -54,43 +61,42 @@ async def send_q(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         ud['poll_id'] = msg.poll.id
         ud['idx'] = idx + 1
     except Exception as e:
-        logger.error(f"Error sending poll: {e}")
+        logger.error(f"Error: {e}")
 
-# 5. हैंडलर्स
+# 4. हैंडलर्स
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # 'mappingproxy' एरर को ठीक करने के लिए context.user_data का उपयोग
+    chat_id = update.effective_chat.id
     context.user_data.clear()
-    context.user_data.update({'busy': False, 'score': 0, 'idx': 0})
     
-    db = load_db()
-    if not db:
-        await update.message.reply_text("❌ डेटाबेस लोड नहीं हो सका!")
+    # अगर मेमोरी खाली है, तो लोड करें
+    if not DB_CACHE:
+        sync_db()
+
+    if not DB_CACHE:
+        await update.message.reply_text("❌ डेटाबेस लोड नहीं हो सका।")
         return
 
     icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "💎", "🔥", "🌈"]
-    keyboard = [[InlineKeyboardButton(f"{random.choice(icons)} {t}", callback_data=t)] for t in db.keys()]
+    keyboard = [[InlineKeyboardButton(f"{random.choice(icons)} {t}", callback_data=t)] for t in DB_CACHE.keys()]
     
-    await update.message.reply_text("🎯 **रिवीजन शुरू करें! अपना टॉपिक चुनें:**", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("🎯 **अपना टॉपिक चुनें:**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     chat_id = query.message.chat_id
     
-    db = load_db()
-    topic_data = db.get(query.data, [])
-    if not topic_data: 
-        return
+    topic_data = DB_CACHE.get(query.data, [])
+    if not topic_data: return
 
-    qs = random.sample(topic_data, min(len(topic_data), 20))
+    # जितने सवाल PDF में हैं, सब पूछें (Unlimited)
+    qs = random.sample(topic_data, len(topic_data))
     
-    # डेटा अपडेट करें
     context.user_data.update({
         'qs': qs, 
         'idx': 0, 
         'score': 0, 
-        'busy': True, 
-        'chat_id': chat_id
+        'busy': True
     })
     
     await query.delete_message()
@@ -99,27 +105,34 @@ async def handle_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_ans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ans = update.poll_answer
     ud = context.user_data
-    
-    # चेक करें कि क्या यह सही पोल है
     if ud and ud.get('busy') and ud.get('poll_id') == ans.poll_id:
         idx = ud['idx'] - 1
         if ans.option_ids[0] == ud['qs'][idx]['answer']:
             ud['score'] += 1
-        
         await asyncio.sleep(1)
         await send_q(context, update.effective_user.id)
 
-# 6. MAIN
+async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """नया डेटा GitHub से तुरंत खींचने के लिए कमांड"""
+    await update.message.reply_text("⏳ नए सवालों को लोड किया जा रहा है...")
+    if sync_db():
+        await update.message.reply_text(f"✅ सफलता! अब कुल {len(DB_CACHE)} टॉपिक्स उपलब्ध हैं।")
+    else:
+        await update.message.reply_text("❌ सिंक फेल हो गया।")
+
+# 5. MAIN
 def main():
+    # शुरुआत में ही एक बार डेटा लोड कर लें
+    sync_db()
+
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("refresh", refresh)) # नई कमांड
     application.add_handler(CallbackQueryHandler(handle_topic))
     application.add_handler(PollAnswerHandler(handle_ans))
 
     port = int(os.environ.get("PORT", 10000))
-
-    # Webhook का उपयोग Conflict खत्म करने के लिए
     application.run_webhook(
         listen="0.0.0.0",
         port=port,
