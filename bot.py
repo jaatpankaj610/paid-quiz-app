@@ -17,18 +17,18 @@ TOKEN = "7908449655:AAGVk4HYN98rZkJoeTtPIdHsHdmnrlhPG9w"
 GITHUB_URL = "https://raw.githubusercontent.com/jaatpankaj610/paid-quiz-app/main/quiz_database.json"
 WEBHOOK_URL = f"https://bankerbot-mdzw.onrender.com/{TOKEN}"
 
-# ग्लोबल मेमोरी (सवालों के लिए)
 DB_CACHE = {}
 
 def sync_db():
-    """GitHub से बिना किसी देरी के ताज़ा डेटा लोड करने के लिए"""
+    """GitHub से तुरंत और पक्का नया डेटा लाने के लिए"""
     global DB_CACHE
     try:
-        # '?t=' की मदद से GitHub Cache को बायपास किया गया है ताकि तुरंत अपडेट मिले
-        r = requests.get(f"{GITHUB_URL}?t={int(time.time())}", timeout=20)
+        # यहाँ '?cache_buster=' लगाया है ताकि GitHub पुराने डेटा को न भेजे
+        headers = {'Cache-Control': 'no-cache'}
+        r = requests.get(f"{GITHUB_URL}?cb={int(time.time())}", headers=headers, timeout=20)
         if r.status_code == 200:
             DB_CACHE = r.json()
-            logger.info(f"सिंक सफल: {len(DB_CACHE)} टॉपिक्स मिले।")
+            logger.info(f"Sync Successful: {len(DB_CACHE)} topics.")
             return True
     except Exception as e:
         logger.error(f"Sync Error: {e}")
@@ -41,27 +41,26 @@ async def send_q(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
     idx = ud.get('idx', 0)
     qs = ud['qs']
-    total = len(qs)
+    total_qs = len(qs) # अब यह ऑटोमैटिक PDF के सारे सवाल गिनेगा
 
-    if idx >= total:
+    if idx >= total_qs:
         score = ud.get('score', 0)
-        await context.bot.send_message(chat_id, f"🎊 **रिवीजन संपन्न!**\n\n📊 आपका स्कोर: `{score}/{total}` सही\n\nनया टॉपिक चुनने के लिए /start दबाएँ।")
+        await context.bot.send_message(chat_id, f"🎊 **रिवीजन संपन्न!**\n\n📊 आपका स्कोर: `{score}/{total_qs}` सही\n\nनया टॉपिक चुनने के लिए /start दबाएँ।")
         ud['busy'] = False
         return
 
     q = qs[idx]
     try:
+        # यहाँ 'total_qs' का उपयोग हो रहा है, जो पक्का PDF के कुल सवाल दिखाएगा
         await context.bot.send_poll(
             chat_id=chat_id,
-            question=f"✨ ({idx+1}/{total}) {random.choice(q['variations'])}",
+            question=f"✨ ({idx+1}/{total_qs}) {random.choice(q['variations'])}",
             options=q['options'],
             type=Poll.QUIZ,
             correct_option_id=q['answer'],
             is_anonymous=False,
             explanation="सही उत्तर आपकी मेहनत का परिणाम है! 📚"
         )
-        # पोल ID को ट्रैक करना ताकि आंसर हैंडल हो सके
-        # नोट: हम यहाँ poll_id स्टोर नहीं कर रहे क्योंकि PollAnswerHandler user_id से जुड़ा है
         ud['idx'] = idx + 1
     except Exception as e:
         logger.error(f"Poll Error: {e}")
@@ -71,18 +70,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     context.user_data.clear()
     
-    # अगर पहली बार चल रहा है तो सिंक करें
+    # अगर शुरू में डेटा नहीं है तो लोड करें
     if not DB_CACHE: sync_db()
 
-    icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "💎", "🔥", "🌈"]
-    # बटन बनाना (DB_CACHE की Keys से)
-    keyboard = [[InlineKeyboardButton(f"{random.choice(icons)} {t}", callback_data=t)] for t in DB_CACHE.keys()]
-    
-    if not keyboard:
-        await update.message.reply_text("❌ अभी कोई टॉपिक उपलब्ध नहीं है।")
+    if not DB_CACHE:
+        await update.message.reply_text("❌ डेटाबेस लोड नहीं हो सका।")
         return
 
-    await update.message.reply_text("🎯 **अपना टॉपिक चुनें और रिवीजन शुरू करें:**", reply_markup=InlineKeyboardMarkup(keyboard))
+    icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "💎", "🔥", "🌈"]
+    keyboard = [[InlineKeyboardButton(f"{random.choice(icons)} {t}", callback_data=t)] for t in DB_CACHE.keys()]
+    
+    await update.message.reply_text("🎯 **अपना टॉपिक चुनें:**", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def handle_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -90,26 +88,27 @@ async def handle_topic(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = query.message.chat_id
     
     topic_name = query.data
-    # पूरे टॉपिक का डेटा निकालें (चाहे कितने भी सवाल हों)
-    topic_qs = list(DB_CACHE.get(topic_name, []))
+    # पक्का करना कि उस टॉपिक के सारे सवाल लिस्ट में आएँ
+    all_qs = list(DB_CACHE.get(topic_name, []))
     
-    if not topic_qs:
-        await query.message.reply_text("❌ इस टॉपिक में सवाल नहीं मिले।")
+    if not all_qs:
+        await query.message.reply_text("❌ इस टॉपिक में कोई सवाल नहीं मिले।")
         return
 
-    # सारे सवालों को रैंडम क्रम में सेट करें
-    random.shuffle(topic_qs)
+    # रैंडम शफल ताकि क्रम बदल जाए पर सवाल सारे रहें
+    random.shuffle(all_qs)
     
-    # यूजर डेटा में पूरे सवाल (Unlimited) डालना
+    # यूजर डेटा में पूरे सवाल सेव करना
     context.user_data.update({
-        'qs': topic_qs, 
+        'qs': all_qs, 
         'idx': 0, 
         'score': 0, 
-        'busy': True,
-        'current_topic': topic_name
+        'busy': True
     })
     
     await query.delete_message()
+    # यहाँ यूजर को मैसेज भी दे सकते हैं कि कितने सवाल मिले
+    await context.bot.send_message(chat_id, f"📝 इस टॉपिक में कुल {len(all_qs)} सवाल मिले हैं। चलिए शुरू करते हैं!")
     await send_q(context, chat_id)
 
 async def handle_ans(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -119,43 +118,38 @@ async def handle_ans(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if ud and ud.get('busy'):
         idx = ud['idx'] - 1
-        # चेक करें कि यूजर ने सही ऑप्शन चुना है या नहीं
         if ans.option_ids[0] == ud['qs'][idx]['answer']:
             ud['score'] += 1
-        
-        # छोटे से अंतराल के बाद अगला सवाल
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.6)
         await send_q(context, user_id)
 
 async def refresh(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """GitHub से तुरंत नया डेटा लोड करने के लिए"""
-    msg = await update.message.reply_text("⏳ डेटा सिंक हो रहा है...")
+    """नया डेटा GitHub से तुरंत खींचने के लिए"""
+    await update.message.reply_text("⏳ GitHub से ताज़ा सवाल लोड किए जा रहे हैं...")
     if sync_db():
-        await msg.edit_text(f"✅ सफलता! अब कुल {len(DB_CACHE)} टॉपिक्स और हज़ारों सवाल तैयार हैं।")
+        # यहाँ कुल टॉपिक्स और कुल सवालों की गिनती दिखाएगा
+        total_questions = sum(len(v) for v in DB_CACHE.values())
+        await update.message.reply_text(f"✅ सिंक सफल!\n📂 कुल टॉपिक्स: {len(DB_CACHE)}\n📚 कुल सवाल: {total_questions}")
     else:
-        await msg.edit_text("❌ सिंक फेल हो गया। कृपया GitHub लिंक चेक करें।")
+        await update.message.reply_text("❌ सिंक फेल हो गया।")
 
-# 5. MAIN (Webhook Mode)
+# 5. MAIN
 def main():
-    # स्टार्ट होते ही सबसे पहले डेटा लोड करें
     sync_db()
-
     application = Application.builder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("refresh", refresh))
+    application.add_handler(CommandHandler("refresh", refresh)) # ताज़ा डेटा के लिए
     application.add_handler(CallbackQueryHandler(handle_topic))
     application.add_handler(PollAnswerHandler(handle_ans))
 
     port = int(os.environ.get("PORT", 10000))
-    
-    # Conflict रोकने के लिए Webhook + drop_pending_updates
     application.run_webhook(
         listen="0.0.0.0",
         port=port,
         url_path=TOKEN,
         webhook_url=WEBHOOK_URL,
-        drop_pending_updates=True 
+        drop_pending_updates=True
     )
 
 if __name__ == '__main__':
