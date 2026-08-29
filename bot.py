@@ -170,7 +170,6 @@ def build_topics_keyboard(page: int = 0):
     keyboard.append([InlineKeyboardButton("⚡ SUPER RESET ⚡", callback_data="super_reset")])
     return InlineKeyboardMarkup(keyboard)
 
-# --- BULLETPROOF ENGINE ---
 # --- BULLETPROOF ENGINE (Lock Stuck Safety) ---
 async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     user_data = context.application.user_data.get(user_id)
@@ -255,10 +254,17 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
         random.shuffle(shuffled_options)
         correct_option_id = shuffled_options.index(correct_option_text)
 
+        # 🌟 यहाँ ऑप्शंस के आगे अलग-अलग रंग-बिरंगे गोले जोड़े गए हैं 🌟
+        circle_icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "🟠", "⚪", "🟤"]
+        formatted_options = [
+            f"{circle_icons[i % len(circle_icons)]} {opt}" 
+            for i, opt in enumerate(shuffled_options)
+        ]
+
         message = await context.bot.send_poll(
             chat_id=chat_id,
             question=q_header,
-            options=shuffled_options,
+            options=formatted_options,
             type=Poll.QUIZ,
             correct_option_id=correct_option_id,
             is_anonymous=False,
@@ -285,7 +291,6 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             user_data['sending_lock'] = False
 
 # --- Poll Answer Handler ---
-# --- Async Queue Safety Handler ---
 USER_LOCKS = {}
 
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -425,7 +430,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome = (
         "╔════════════════════╗\n"
-        f"   👑 {style_txt('PANKAJ QUIZ BOT 2.0')} 👑\n"
+        f"    👑 {style_txt('PANKAJ QUIZ BOT 2.0')} 👑\n"
         "╚════════════════════╝\n\n"
         f"{random.choice(SHAYARIS)}\n\n"
         "🎯 अपनी पसंद का विषय चुनें: 👇"
@@ -513,7 +518,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
-# --- SELF-PING LOOP (Render को 24/7 बिना सोए एक्टिव रखेगा) ---
+# --- SELF-PING LOOP ---
 async def self_ping():
     await asyncio.sleep(10)
     async with httpx.AsyncClient() as client:
@@ -523,7 +528,7 @@ async def self_ping():
                 logger.info("⚡ Heartbeat Sent: Server Kept Awake!")
             except Exception as e:
                 logger.error(f"Heartbeat Error: {e}")
-            await asyncio.sleep(240)  # हर 4 मिनट में पिंग करेगा
+            await asyncio.sleep(240)
 
 async def post_init(application: Application):
     asyncio.create_task(self_ping())
