@@ -170,7 +170,7 @@ def build_topics_keyboard(page: int = 0):
     keyboard.append([InlineKeyboardButton("⚡ SUPER RESET ⚡", callback_data="super_reset")])
     return InlineKeyboardMarkup(keyboard)
 
-# --- BULLETPROOF ENGINE (Lock Stuck Safety) ---
+# --- BULLETPROOF ENGINE ---
 async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     user_data = context.application.user_data.get(user_id)
     if not user_data or not user_data.get('busy'):
@@ -197,11 +197,14 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
 
         total_qs = len(qs)
 
+        # 📊 QUIZ COMPLETED REPORT
         if idx >= total_qs:
             score = user_data.get('score', 0)
             wrong_count = total_qs - score
             per = int((score / total_qs) * 100) if total_qs > 0 else 0
             medal = "🏆" if per >= 80 else "🥇"
+
+            bm_count = len(user_data.get('bookmarked_qs', []))
 
             res = (
                 f"╔═════════════════════════╗\n"
@@ -209,6 +212,7 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
                 f"╚═════════════════════════╝\n\n"
                 f"📝 विषय: {topic}\n"
                 f"✅ सही: {score} | ❌ गलत: {wrong_count}\n"
+                f"🔖 मार्क किए कमजोर सवाल: {bm_count}\n"
                 f"🏆 कुल स्कोर: {per}%\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━"
             )
@@ -216,6 +220,9 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             keyboard = []
             if wrong_count > 0 and user_data.get('wrong_qs'):
                 keyboard.append([InlineKeyboardButton(f"🔄 गलत सवाल फिर से हल करें ({wrong_count})", callback_data="retry_wrong")])
+
+            if bm_count > 0:
+                keyboard.append([InlineKeyboardButton(f"🔖 कमजोर सवाल हल करें ({bm_count})", callback_data="retry_bookmarked")])
 
             reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
             await context.bot.send_message(chat_id, res, reply_markup=reply_markup)
@@ -232,6 +239,9 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             user_data['idx'] = idx + 1
             asyncio.create_task(send_next_quiz(context, chat_id, user_id))
             return
+
+        # वर्तमान सवाल को user_data में रख रहे हैं ताकि मार्क बटन काम करे
+        user_data['current_question'] = q
 
         current_q_num = idx + 1
         remaining_qs = total_qs - current_q_num
@@ -254,12 +264,16 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
         random.shuffle(shuffled_options)
         correct_option_id = shuffled_options.index(correct_option_text)
 
-        # 🌟 यहाँ ऑप्शंस के आगे अलग-अलग रंग-बिरंगे गोले जोड़े गए हैं 🌟
         circle_icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "🟠", "⚪", "🟤"]
         formatted_options = [
             f"{circle_icons[i % len(circle_icons)]} {opt}" 
             for i, opt in enumerate(shuffled_options)
         ]
+
+        # 🌟 पोल के नीचे 'मार्क करें' का बटन 🌟
+        bookmark_btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔖 मार्क करें (कमजोर सवाल)", callback_data="mark_weak_question")]
+        ])
 
         message = await context.bot.send_poll(
             chat_id=chat_id,
@@ -268,6 +282,7 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             type=Poll.QUIZ,
             correct_option_id=correct_option_id,
             is_anonymous=False,
+            reply_markup=bookmark_btn,  # Inline Keyboard appended under Poll
             read_timeout=15,
             write_timeout=15
         )
@@ -421,7 +436,12 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_chat_action("typing")
+    
+    # Save bookmarked questions before clearing context
+    bookmarked = context.user_data.get('bookmarked_qs', [])
     context.user_data.clear()
+    if bookmarked:
+        context.user_data['bookmarked_qs'] = bookmarked
 
     if not DB_CACHE:
         await sync_db()
@@ -440,14 +460,32 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
-
     data = query.data
     user_id = query.from_user.id
     chat_id = query.message.chat_id
 
     if data == "noop":
+        await query.answer()
         return
+
+    # 🌟 कमजोर सवाल (Bookmark) करने का Logic 🌟
+    if data == "mark_weak_question":
+        current_q = context.user_data.get('current_question')
+        if current_q:
+            if 'bookmarked_qs' not in context.user_data:
+                context.user_data['bookmarked_qs'] = []
+            
+            # अगर सवाल पहले से सेव नहीं है तो जोड़ो
+            if current_q not in context.user_data['bookmarked_qs']:
+                context.user_data['bookmarked_qs'].append(current_q)
+                await query.answer("📌 यह सवाल 'कमजोर सवाल' (Weak Questions) में सेव हो गया!", show_alert=True)
+            else:
+                await query.answer("⚠️ यह सवाल पहले से ही सेव है!", show_alert=False)
+        else:
+            await query.answer("❌ सवाल की जानकारी नहीं मिली।", show_alert=False)
+        return
+
+    await query.answer()
 
     if data == "super_reset":
         class TU:
@@ -478,6 +516,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         indices = list(range(total_questions))
         random.shuffle(indices)
 
+        saved_bookmarks = context.user_data.get('bookmarked_qs', [])
         context.user_data.clear()
         context.user_data.update({
             'q_indices': indices, 
@@ -486,6 +525,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'busy': True, 
             'topic': topic, 
             'wrong_qs': [],
+            'bookmarked_qs': saved_bookmarks,
             'is_retry': False,
             'sending_lock': False
         })
@@ -501,6 +541,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         qs = list(wrong_qs)
         random.shuffle(qs)
+        saved_bookmarks = context.user_data.get('bookmarked_qs', [])
         context.user_data.clear()
         context.user_data.update({
             'wrong_qs_pool': qs, 
@@ -509,6 +550,32 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'busy': True, 
             'topic': f"{topic} (गलत सवाल)", 
             'wrong_qs': [],
+            'bookmarked_qs': saved_bookmarks,
+            'is_retry': True,
+            'sending_lock': False
+        })
+        asyncio.create_task(send_next_quiz(context, chat_id, user_id))
+        return
+
+    # 🌟 मार्क किए गए कमजोर सवालों का रिवीजन क्विज़ शुरू करना 🌟
+    if data == "retry_bookmarked":
+        bm_qs = context.user_data.get('bookmarked_qs', [])
+        topic = context.user_data.get('topic', 'रिवीजन')
+        if not bm_qs:
+            await query.message.reply_text("❌ कोई कमजोर सवाल सेव नहीं है!")
+            return
+
+        qs = list(bm_qs)
+        random.shuffle(qs)
+        context.user_data.clear()
+        context.user_data.update({
+            'wrong_qs_pool': qs, 
+            'idx': 0, 
+            'score': 0, 
+            'busy': True, 
+            'topic': f"{topic} (🔖 कमजोर सवाल)", 
+            'wrong_qs': [],
+            'bookmarked_qs': [],
             'is_retry': True,
             'sending_lock': False
         })
