@@ -137,6 +137,7 @@ SHAYARIS = [
 ]
 
 def build_topics_keyboard(page: int = 0):
+    # केवल मुख्य विषय लें (कमजोर सवाल वाले नाम अलग से मुख्य बटन नहीं बनेंगे)
     topics = sorted([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
 
     if not topics:
@@ -346,11 +347,11 @@ async def reset_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def refresh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("📡 Syncing Database...")
     if await sync_db():
-        total_topics = len(DB_CACHE.keys())
+        total_topics = len([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
         total_qs = sum(len(v) for v in DB_CACHE.values())
         res = (
             "╔════════════════════╗\n 🔄 REFRESH SUCCESS 🔄 \n╚════════════════════╝\n"
-            f"\n📂 कुल विषय: {total_topics} | 📊 कुल सवाल: {total_qs}\n\n/start पर क्लिक करें।"
+            f"\n📂 कुल मुख्य विषय: {total_topics} | 📊 कुल सवाल: {total_qs}\n\n/start पर क्लिक करें।"
         )
         await msg.edit_text(res)
     else:
@@ -387,10 +388,10 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if saved:
             DB_CACHE = latest_db
             STYLED_NAMES_CACHE.clear()
-            total_topics = len(DB_CACHE.keys())
+            total_topics = len([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
             await m.edit_text(
                 "╔════════════════════╗\n  🚀 SUCCESSFULLY ADDED! 🚀  \n╚════════════════════╝\n"
-                f"📦 कुल सुरक्षित विषय: {total_topics}"
+                f"📦 कुल सुरक्षित मुख्य विषय: {total_topics}"
             )
             markup = build_topics_keyboard(page=0)
             await update.message.reply_text("🎯 अपडेटेड विषय सूची:", reply_markup=markup)
@@ -413,6 +414,11 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if t in latest_db:
         del latest_db[t]
+        # कमजोर सवाल वाली लिस्ट भी डिलीट कर दें अगर हो
+        weak_key = f"{t} (कमजोर सवाल)"
+        if weak_key in latest_db:
+            del latest_db[weak_key]
+
         saved = await save_to_github_safely(latest_db, f"Deleted Topic: {t}")
         if saved:
             DB_CACHE = latest_db
@@ -450,7 +456,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global DB_CACHE
     query = update.callback_query
     
-    # ⚡⚡ FASTEST RESPONSE (Microsecond Speed & Vibration trigger) ⚡⚡
+    # Instant Microsecond ACK + Vibration
     try:
         await query.answer()
     except Exception:
@@ -488,7 +494,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(welcome, reply_markup=markup)
         return
 
-    # 📌 माइक्रो-सेकंड में जवाब देना + बैकग्राउंड में GitHub Sync करना
     if data == "mark_weak_perm":
         current_q = context.user_data.get('current_question')
         main_topic = context.user_data.get('topic')
@@ -505,10 +510,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if current_q not in DB_CACHE[weak_topic_key]:
                 DB_CACHE[weak_topic_key].append(current_q)
                 
-                # Fast Alert to user
                 await context.bot.send_message(chat_id, f"✅ **सवाल '{main_topic}' के कमजोर बटन में जुड़ गया!**", parse_mode="Markdown")
 
-                # GitHub पर बैकग्राउंड में सेव होगा ताकि बोट स्लो न हो
                 async def async_save():
                     latest_db = await get_latest_github_db()
                     if not latest_db:
