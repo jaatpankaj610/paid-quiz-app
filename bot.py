@@ -137,7 +137,6 @@ SHAYARIS = [
 ]
 
 def build_topics_keyboard(page: int = 0):
-    # केवल मुख्य विषय लें (कमजोर सवाल वाले नाम अलग से मुख्य बटन नहीं बनेंगे)
     topics = sorted([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
 
     if not topics:
@@ -414,7 +413,6 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if t in latest_db:
         del latest_db[t]
-        # कमजोर सवाल वाली लिस्ट भी डिलीट कर दें अगर हो
         weak_key = f"{t} (कमजोर सवाल)"
         if weak_key in latest_db:
             del latest_db[weak_key]
@@ -423,13 +421,39 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if saved:
             DB_CACHE = latest_db
             STYLED_NAMES_CACHE.clear()
-            await m.edit_text(f"✅ DELETED: {t}\n\nबाकी सभी विषय सुरक्षित हैं!")
+            await m.edit_text(f"✅ DELETED: {t}\n\nमूल विषय और कमजोर सवाल दोनों डिलीट हो गए!")
             markup = build_topics_keyboard(page=0)
             await update.message.reply_text("🎯 अपडेटेड विषय सूची:", reply_markup=markup)
         else:
             await m.edit_text("❌ डिलीट करने में विफल! GitHub कनेक्ट नहीं हुआ।")
     else:
         await m.edit_text(f"❌ विषय '{t}' डेटाबेस में नहीं मिला! कृपया सही नाम लिखें।")
+
+# ⚡⚡ नयी कमांड: सिर्फ कमजोर सवाल की लिस्ट डिलीट करने के लिए ⚡⚡
+async def delete_weak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global DB_CACHE, STYLED_NAMES_CACHE
+    t = " ".join(context.args).strip()
+    if not t:
+        return await update.message.reply_text("💡 उपयोग: /delete_weak TopicName\n(उदाहरण: /delete_weak राजस्थान भूगोल)")
+
+    weak_key = f"{t} (कमजोर सवाल)"
+    m = await update.message.reply_text(f"🗑️ Deleting Weak Questions for '{t}'...")
+    
+    latest_db = await get_latest_github_db()
+    if not latest_db:
+        latest_db = DB_CACHE
+
+    if weak_key in latest_db:
+        del latest_db[weak_key]
+        saved = await save_to_github_safely(latest_db, f"Deleted Weak List for: {t}")
+        if saved:
+            DB_CACHE = latest_db
+            STYLED_NAMES_CACHE.clear()
+            await m.edit_text(f"✅ **'{t}' के सभी कमजोर सवाल डिलीट कर दिए गए हैं!**\n\n(मूल विषय '{t}' पूरी तरह सुरक्षित है।)", parse_mode="Markdown")
+        else:
+            await m.edit_text("❌ GitHub अपडेट करने में समस्या आई।")
+    else:
+        await m.edit_text(f"⚠️ '{t}' के लिए कोई कमजोर सवाल की लिस्ट नहीं मिली।")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
@@ -456,9 +480,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global DB_CACHE
     query = update.callback_query
     
-    # Instant Microsecond ACK + Vibration
+    # ⚡⚡ Instant Ultra-Fast Response (Microsecond Response & Vibration Trigger) ⚡⚡
     try:
-        await query.answer()
+        await query.answer(cache_time=0)
     except Exception:
         pass
 
@@ -616,6 +640,7 @@ def main():
     app.add_handler(CommandHandler("refresh", refresh_cmd))
     app.add_handler(CommandHandler("reset", reset_bot))
     app.add_handler(CommandHandler("delete", delete_cmd))
+    app.add_handler(CommandHandler("delete_weak", delete_weak_cmd)) # ⚡ नयी कमांड जोड़ी गई
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(PollAnswerHandler(handle_poll_answer))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
