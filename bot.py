@@ -138,20 +138,19 @@ SHAYARIS = [
 ]
 
 def build_topics_keyboard(page: int = 0):
-    topics = sorted([t for t in DB_CACHE.keys() if t != WEAK_TOPIC_NAME])
-    
     keyboard = []
     
-    # 🌟 अगर कमजोर सवालों का फ़ोल्डर मौजूद है, तो उसे सबसे ऊपर स्थायी (Permanent) दिखाएं
-    if WEAK_TOPIC_NAME in DB_CACHE and DB_CACHE[WEAK_TOPIC_NAME]:
-        w_count = len(DB_CACHE[WEAK_TOPIC_NAME])
-        keyboard.append([InlineKeyboardButton(f"⭐ {WEAK_TOPIC_NAME} [{w_count}Q]", callback_data=f"tp_{WEAK_TOPIC_NAME}")])
+    # 🌟 1. कमजोर सवालों का स्थायी (Permanent) बटन - सबसे ऊपर
+    w_count = len(DB_CACHE.get(WEAK_TOPIC_NAME, []))
+    keyboard.append([InlineKeyboardButton(f"⭐ {WEAK_TOPIC_NAME} [{w_count}Q]", callback_data=f"tp_{WEAK_TOPIC_NAME}")])
 
-    if not topics and WEAK_TOPIC_NAME not in DB_CACHE:
+    topics = sorted([t for t in DB_CACHE.keys() if t != WEAK_TOPIC_NAME])
+
+    if not topics and w_count == 0:
         return InlineKeyboardMarkup([[InlineKeyboardButton("❌ कोई विषय नहीं मिला", callback_data="noop")]])
 
     total_topics = len(topics)
-    total_pages = max(1, (total_topics + TOPICS_PER_PAGE - 1) // TOPICS_PER_PAGE)
+    total_pages = max(1, (total_topics + TOPICS_PER_PAGE - 1) // TOPICS_PER_PAGE) if total_topics > 0 else 1
     page = max(0, min(page, total_pages - 1))
 
     start_idx = page * TOPICS_PER_PAGE
@@ -168,7 +167,8 @@ def build_topics_keyboard(page: int = 0):
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}"))
-    nav_buttons.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
+    if total_topics > 0:
+        nav_buttons.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1:
         nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}"))
 
@@ -178,7 +178,7 @@ def build_topics_keyboard(page: int = 0):
     keyboard.append([InlineKeyboardButton("⚡ SUPER RESET ⚡", callback_data="super_reset")])
     return InlineKeyboardMarkup(keyboard)
 
-# --- BULLETPROOF ENGINE ---
+# --- QUIZ ENGINE ---
 async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     user_data = context.application.user_data.get(user_id)
     if not user_data or not user_data.get('busy'):
@@ -226,10 +226,6 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             if wrong_count > 0 and user_data.get('wrong_qs'):
                 keyboard.append([InlineKeyboardButton(f"🔄 गलत सवाल फिर से हल करें ({wrong_count})", callback_data="retry_wrong")])
 
-            if WEAK_TOPIC_NAME in DB_CACHE and DB_CACHE[WEAK_TOPIC_NAME]:
-                w_count = len(DB_CACHE[WEAK_TOPIC_NAME])
-                keyboard.append([InlineKeyboardButton(f"🔖 स्थायी कमजोर सवाल हल करें ({w_count})", callback_data=f"tp_{WEAK_TOPIC_NAME}")])
-
             reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
             await context.bot.send_message(chat_id, res, reply_markup=reply_markup)
             user_data['busy'] = False
@@ -275,9 +271,9 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             for i, opt in enumerate(shuffled_options)
         ]
 
-        # 🌟 स्थायी कमजोर सवाल में सेव करने का बटन 🌟
+        # 🔖 कमजोर सवाल जोड़ने वाला बटन (हर सवाल के नीचे)
         bookmark_btn = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔖 मार्क करें (कमजोर सवाल लिस्ट में जोड़ें)", callback_data="mark_weak_perm")]
+            [InlineKeyboardButton("🔖 मार्क करें (कमजोर सवाल लिस्ट में जोड़ें)", callback_data="mark_weak_perm")]
         ])
 
         message = await context.bot.send_poll(
@@ -469,7 +465,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    # 🌟 स्थायी कमजोरी विषय में सवाल जोड़ना (GitHub Sync) 🌟
+    # 📌 सवाल को कमजोर सवाल फोल्डर में सेव करना (GitHub Database)
     if data == "mark_weak_perm":
         current_q = context.user_data.get('current_question')
         if current_q:
@@ -481,17 +477,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if WEAK_TOPIC_NAME not in latest_db:
                 latest_db[WEAK_TOPIC_NAME] = []
 
-            # यदि सवाल पहले से सूची में नहीं है
             if current_q not in latest_db[WEAK_TOPIC_NAME]:
                 latest_db[WEAK_TOPIC_NAME].append(current_q)
                 saved = await save_to_github_safely(latest_db, "Added Permanent Weak Question")
                 if saved:
                     DB_CACHE = latest_db
-                    await query.answer("📌 सवाल '🔖 मेरे कमजोर सवाल' के स्थायी बटन में जुड़ गया!", show_alert=True)
+                    await query.answer("📌 सवाल '🔖 मेरे कमजोर सवाल' बटन में स्थायी रूप से जुड़ गया!", show_alert=True)
                 else:
                     await query.answer("❌ सेव करने में दिक्कत आई!", show_alert=True)
             else:
-                await query.answer("⚠️ यह सवाल पहले से ही लिस्ट में मौजूद है!", show_alert=False)
+                await query.answer("⚠️ यह सवाल पहले से कमजोर सवाल लिस्ट में मौजूद है!", show_alert=False)
         else:
             await query.answer("❌ सवाल डेटा उपलब्ध नहीं है।", show_alert=False)
         return
@@ -515,15 +510,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("tp_"):
         topic = data[3:]
-        if topic not in DB_CACHE:
-            await query.message.reply_text("❌ यह विषय उपलब्ध नहीं है! /start करें।")
-            return
-
-        total_questions = len(DB_CACHE[topic])
-        if total_questions == 0:
+        if topic not in DB_CACHE or len(DB_CACHE[topic]) == 0:
             await query.message.reply_text("❌ इस विषय में कोई सवाल नहीं हैं!")
             return
 
+        total_questions = len(DB_CACHE[topic])
         indices = list(range(total_questions))
         random.shuffle(indices)
 
