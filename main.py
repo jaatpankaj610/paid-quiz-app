@@ -137,7 +137,8 @@ SHAYARIS = [
 ]
 
 def build_topics_keyboard(page: int = 0):
-    topics = sorted(list(DB_CACHE.keys()))
+    topics = sorted([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
+
     if not topics:
         return InlineKeyboardMarkup([[InlineKeyboardButton("❌ कोई विषय नहीं मिला", callback_data="noop")]])
 
@@ -155,7 +156,7 @@ def build_topics_keyboard(page: int = 0):
     for t in current_topics:
         q_count = len(DB_CACHE[t])
         btn_text = f"{random.choice(icons)} {style_txt(t)} [{q_count}Q]"
-        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"tp_{t}")])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"opt_{t}")])
 
     nav_buttons = []
     if page > 0:
@@ -170,7 +171,7 @@ def build_topics_keyboard(page: int = 0):
     keyboard.append([InlineKeyboardButton("⚡ SUPER RESET ⚡", callback_data="super_reset")])
     return InlineKeyboardMarkup(keyboard)
 
-# --- BULLETPROOF ENGINE (Lock Stuck Safety) ---
+# --- QUIZ ENGINE ---
 async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     user_data = context.application.user_data.get(user_id)
     if not user_data or not user_data.get('busy'):
@@ -233,6 +234,8 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             asyncio.create_task(send_next_quiz(context, chat_id, user_id))
             return
 
+        user_data['current_question'] = q
+
         current_q_num = idx + 1
         remaining_qs = total_qs - current_q_num
 
@@ -254,12 +257,15 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
         random.shuffle(shuffled_options)
         correct_option_id = shuffled_options.index(correct_option_text)
 
-        # 🌟 यहाँ ऑप्शंस के आगे अलग-अलग रंग-बिरंगे गोले जोड़े गए हैं 🌟
         circle_icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "🟠", "⚪", "🟤"]
         formatted_options = [
             f"{circle_icons[i % len(circle_icons)]} {opt}" 
             for i, opt in enumerate(shuffled_options)
         ]
+
+        bookmark_btn = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔖 मार्क करें (कमजोर सवाल लिस्ट में जोड़ें)", callback_data="mark_weak_perm")]
+        ])
 
         message = await context.bot.send_poll(
             chat_id=chat_id,
@@ -268,6 +274,7 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             type=Poll.QUIZ,
             correct_option_id=correct_option_id,
             is_anonymous=False,
+            reply_markup=bookmark_btn,
             read_timeout=15,
             write_timeout=15
         )
@@ -350,6 +357,7 @@ async def refresh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("❌ Sync Failed!")
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global DB_CACHE, STYLED_NAMES_CACHE
     json_text = ""
     if update.message.document:
         f = await context.bot.get_file(update.message.document.file_id)
@@ -365,7 +373,6 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clean_text = json_text.replace('```json', '').replace('```', '').strip()
         new_data = json.loads(clean_text)
 
-        global DB_CACHE, STYLED_NAMES_CACHE
         latest_db = await get_latest_github_db()
         if not latest_db:
             latest_db = DB_CACHE
@@ -394,12 +401,12 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await m.edit_text(f"❌ Data Format Error: {e}")
 
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global DB_CACHE, STYLED_NAMES_CACHE
     t = " ".join(context.args).strip()
     if not t:
         return await update.message.reply_text("💡 उपयोग: /delete TopicName")
 
     m = await update.message.reply_text(f"🛡️ Deleting {t} safely...")
-    global DB_CACHE, STYLED_NAMES_CACHE
     latest_db = await get_latest_github_db()
     if not latest_db:
         latest_db = DB_CACHE
@@ -421,6 +428,7 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_chat_action("typing")
+    
     context.user_data.clear()
 
     if not DB_CACHE:
@@ -439,15 +447,72 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome, reply_markup=markup)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global DB_CACHE
     query = update.callback_query
-    await query.answer()
-
     data = query.data
     user_id = query.from_user.id
     chat_id = query.message.chat_id
 
     if data == "noop":
+        await query.answer()
         return
+
+    if data.startswith("opt_"):
+        main_topic = data[4:]
+        weak_topic_key = f"{main_topic} (कमजोर सवाल)"
+        
+        main_q_count = len(DB_CACHE.get(main_topic, []))
+        weak_q_count = len(DB_CACHE.get(weak_topic_key, []))
+
+        keyboard = []
+
+        if weak_q_count > 0:
+            keyboard.append([InlineKeyboardButton(f"⭐ 🔖 {main_topic} (कमजोर सवाल) [{weak_q_count}Q]", callback_data=f"tp_{weak_topic_key}")])
+
+        keyboard.append([InlineKeyboardButton(f"▶️ {main_topic} के सभी सवाल [{main_q_count}Q]", callback_data=f"tp_{main_topic}")])
+        keyboard.append([InlineKeyboardButton("⬅️ मुख्य मेन्यू में वापस जाएं", callback_data="back_to_main")])
+
+        markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"📌 विषय: **{main_topic}**\n\nनीचे दिए गए विकल्पों में से चुनें: 👇", reply_markup=markup, parse_mode="Markdown")
+        return
+
+    if data == "back_to_main":
+        markup = build_topics_keyboard(page=0)
+        welcome = "🎯 अपनी पसंद का विषय चुनें: 👇"
+        await query.edit_message_text(welcome, reply_markup=markup)
+        return
+
+    if data == "mark_weak_perm":
+        current_q = context.user_data.get('current_question')
+        main_topic = context.user_data.get('topic')
+        
+        if main_topic and main_topic.endswith(" (कमजोर सवाल)"):
+            main_topic = main_topic.replace(" (कमजोर सवाल)", "")
+
+        if current_q and main_topic:
+            weak_topic_key = f"{main_topic} (कमजोर सवाल)"
+            latest_db = await get_latest_github_db()
+            if not latest_db:
+                latest_db = DB_CACHE
+
+            if weak_topic_key not in latest_db:
+                latest_db[weak_topic_key] = []
+
+            if current_q not in latest_db[weak_topic_key]:
+                latest_db[weak_topic_key].append(current_q)
+                saved = await save_to_github_safely(latest_db, f"Added Weak Question to {weak_topic_key}")
+                if saved:
+                    DB_CACHE = latest_db
+                    await query.answer(f"📌 सवाल '{weak_topic_key}' के बटन में स्थायी रूप से जुड़ गया!", show_alert=True)
+                else:
+                    await query.answer("❌ सेव करने में दिक्कत आई!", show_alert=True)
+            else:
+                await query.answer("⚠️ यह सवाल पहले से ही इस विषय की कमजोर लिस्ट में मौजूद है!", show_alert=False)
+        else:
+            await query.answer("❌ सवाल का विषय उपलब्ध नहीं है।", show_alert=False)
+        return
+
+    await query.answer()
 
     if data == "super_reset":
         class TU:
@@ -466,15 +531,11 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if data.startswith("tp_"):
         topic = data[3:]
-        if topic not in DB_CACHE:
-            await query.message.reply_text("❌ यह विषय डिलीट हो चुका है! /start करें।")
-            return
-
-        total_questions = len(DB_CACHE[topic])
-        if total_questions == 0:
+        if topic not in DB_CACHE or len(DB_CACHE[topic]) == 0:
             await query.message.reply_text("❌ इस विषय में कोई सवाल नहीं हैं!")
             return
 
+        total_questions = len(DB_CACHE[topic])
         indices = list(range(total_questions))
         random.shuffle(indices)
 
