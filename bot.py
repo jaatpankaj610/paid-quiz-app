@@ -23,7 +23,6 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN")
 REPO_NAME = "jaatpankaj610/paid-quiz-app"
 DB_FILE = "quiz_database.json"
 RENDER_URL = "https://bankerbot-mdzw.onrender.com"
-WEAK_TOPIC_NAME = "🔖 मेरे कमजोर सवाल"
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -137,20 +136,16 @@ SHAYARIS = [
     "💎 संघर्ष जितना कठिन होगा, जीत उतनी ही शानदार होगी!"
 ]
 
+# 🌟 मुख्य विषय सूची बनाना (Weak subtopics को अलग रखना)
 def build_topics_keyboard(page: int = 0):
-    keyboard = []
-    
-    # 🌟 1. कमजोर सवालों का स्थायी (Permanent) बटन - सबसे ऊपर
-    w_count = len(DB_CACHE.get(WEAK_TOPIC_NAME, []))
-    keyboard.append([InlineKeyboardButton(f"⭐ {WEAK_TOPIC_NAME} [{w_count}Q]", callback_data=f"tp_{WEAK_TOPIC_NAME}")])
+    # केवल मूल विषयों (Main Topics) को छांटना (जो [कमजोर] वाले नहीं हैं)
+    topics = sorted([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
 
-    topics = sorted([t for t in DB_CACHE.keys() if t != WEAK_TOPIC_NAME])
-
-    if not topics and w_count == 0:
+    if not topics:
         return InlineKeyboardMarkup([[InlineKeyboardButton("❌ कोई विषय नहीं मिला", callback_data="noop")]])
 
     total_topics = len(topics)
-    total_pages = max(1, (total_topics + TOPICS_PER_PAGE - 1) // TOPICS_PER_PAGE) if total_topics > 0 else 1
+    total_pages = max(1, (total_topics + TOPICS_PER_PAGE - 1) // TOPICS_PER_PAGE)
     page = max(0, min(page, total_pages - 1))
 
     start_idx = page * TOPICS_PER_PAGE
@@ -158,17 +153,17 @@ def build_topics_keyboard(page: int = 0):
     current_topics = topics[start_idx:end_idx]
 
     icons = ["🔴", "🔵", "🟢", "🟡", "🟣", "💎", "⚡", "🔥"]
+    keyboard = []
 
     for t in current_topics:
         q_count = len(DB_CACHE[t])
         btn_text = f"{random.choice(icons)} {style_txt(t)} [{q_count}Q]"
-        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"tp_{t}")])
+        keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"opt_{t}")])
 
     nav_buttons = []
     if page > 0:
         nav_buttons.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"page_{page-1}"))
-    if total_topics > 0:
-        nav_buttons.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
+    nav_buttons.append(InlineKeyboardButton(f"📄 {page+1}/{total_pages}", callback_data="noop"))
     if page < total_pages - 1:
         nav_buttons.append(InlineKeyboardButton("Next ➡️", callback_data=f"page_{page+1}"))
 
@@ -271,7 +266,7 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             for i, opt in enumerate(shuffled_options)
         ]
 
-        # 🔖 कमजोर सवाल जोड़ने वाला बटन (हर सवाल के नीचे)
+        # 🔖 कमजोर सवाल जोड़ने वाला बटन (सब-टॉपिक के अनुसार)
         bookmark_btn = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔖 मार्क करें (कमजोर सवाल लिस्ट में जोड़ें)", callback_data="mark_weak_perm")]
         ])
@@ -465,30 +460,64 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    # 📌 सवाल को कमजोर सवाल फोल्डर में सेव करना (GitHub Database)
+    # 🌟 किसी विषय पर क्लिक करने पर सब-ऑप्शंस दिखाना (मुख्य क्विज़ और कमजोर सवाल)
+    if data.startswith("opt_"):
+        main_topic = data[4:]
+        weak_topic_key = f"{main_topic} (कमजोर सवाल)"
+        
+        main_q_count = len(DB_CACHE.get(main_topic, []))
+        weak_q_count = len(DB_CACHE.get(weak_topic_key, []))
+
+        keyboard = []
+
+        # 1. अगर इस पर्टिकुलर टॉपिक में मार्क किए गए कमजोर सवाल हैं, तो सबसे ऊपर दिखाओ
+        if weak_q_count > 0:
+            keyboard.append([InlineKeyboardButton(f"⭐ 🔖 {main_topic} (कमजोर सवाल) [{weak_q_count}Q]", callback_data=f"tp_{weak_topic_key}")])
+
+        # 2. मुख्य सवालों का बटन
+        keyboard.append([InlineKeyboardButton(f"▶️ {main_topic} के सभी सवाल [{main_q_count}Q]", callback_data=f"tp_{main_topic}")])
+        keyboard.append([InlineKeyboardButton("⬅️ मुख्य मेन्यू में वापस जाएं", callback_data="back_to_main")])
+
+        markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(f"📌 विषय: **{main_topic}**\n\nनीचे दिए गए विकल्पों में से चुनें: 👇", reply_markup=markup, parse_mode="Markdown")
+        return
+
+    if data == "back_to_main":
+        markup = build_topics_keyboard(page=0)
+        welcome = "🎯 अपनी पसंद का विषय चुनें: 👇"
+        await query.edit_message_text(welcome, reply_markup=markup)
+        return
+
+    # 📌 पर्टिकुलर सब-टॉपिक के अनुसार कमजोर सवाल में सेव करना (GitHub Database Sync)
     if data == "mark_weak_perm":
         current_q = context.user_data.get('current_question')
-        if current_q:
+        main_topic = context.user_data.get('topic')
+        
+        if main_topic and main_topic.endswith(" (कमजोर सवाल)"):
+            main_topic = main_topic.replace(" (कमजोर सवाल)", "")
+
+        if current_q and main_topic:
+            weak_topic_key = f"{main_topic} (कमजोर सवाल)"
             global DB_CACHE
             latest_db = await get_latest_github_db()
             if not latest_db:
                 latest_db = DB_CACHE
 
-            if WEAK_TOPIC_NAME not in latest_db:
-                latest_db[WEAK_TOPIC_NAME] = []
+            if weak_topic_key not in latest_db:
+                latest_db[weak_topic_key] = []
 
-            if current_q not in latest_db[WEAK_TOPIC_NAME]:
-                latest_db[WEAK_TOPIC_NAME].append(current_q)
-                saved = await save_to_github_safely(latest_db, "Added Permanent Weak Question")
+            if current_q not in latest_db[weak_topic_key]:
+                latest_db[weak_topic_key].append(current_q)
+                saved = await save_to_github_safely(latest_db, f"Added Weak Question to {weak_topic_key}")
                 if saved:
                     DB_CACHE = latest_db
-                    await query.answer("📌 सवाल '🔖 मेरे कमजोर सवाल' बटन में स्थायी रूप से जुड़ गया!", show_alert=True)
+                    await query.answer(f"📌 सवाल '{weak_topic_key}' के बटन में स्थायी रूप से जुड़ गया!", show_alert=True)
                 else:
                     await query.answer("❌ सेव करने में दिक्कत आई!", show_alert=True)
             else:
-                await query.answer("⚠️ यह सवाल पहले से कमजोर सवाल लिस्ट में मौजूद है!", show_alert=False)
+                await query.answer("⚠️ यह सवाल पहले से ही इस विषय की कमजोर लिस्ट में मौजूद है!", show_alert=False)
         else:
-            await query.answer("❌ सवाल डेटा उपलब्ध नहीं है।", show_alert=False)
+            await query.answer("❌ सवाल का विषय उपलब्ध नहीं है।", show_alert=False)
         return
 
     await query.answer()
