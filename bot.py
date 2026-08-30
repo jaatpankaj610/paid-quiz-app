@@ -136,9 +136,7 @@ SHAYARIS = [
     "💎 संघर्ष जितना कठिन होगा, जीत उतनी ही शानदार होगी!"
 ]
 
-# 🌟 मुख्य विषय सूची बनाना (Weak subtopics को अलग रखना)
 def build_topics_keyboard(page: int = 0):
-    # केवल मूल विषयों (Main Topics) को छांटना (जो [कमजोर] वाले नहीं हैं)
     topics = sorted([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
 
     if not topics:
@@ -200,7 +198,6 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
 
         total_qs = len(qs)
 
-        # 📊 QUIZ COMPLETED REPORT
         if idx >= total_qs:
             score = user_data.get('score', 0)
             wrong_count = total_qs - score
@@ -266,7 +263,6 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             for i, opt in enumerate(shuffled_options)
         ]
 
-        # 🔖 कमजोर सवाल जोड़ने वाला बटन (सब-टॉपिक के अनुसार)
         bookmark_btn = InlineKeyboardMarkup([
             [InlineKeyboardButton("🔖 मार्क करें (कमजोर सवाल लिस्ट में जोड़ें)", callback_data="mark_weak_perm")]
         ])
@@ -361,6 +357,7 @@ async def refresh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("❌ Sync Failed!")
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global DB_CACHE, STYLED_NAMES_CACHE
     json_text = ""
     if update.message.document:
         f = await context.bot.get_file(update.message.document.file_id)
@@ -376,7 +373,6 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         clean_text = json_text.replace('```json', '').replace('```', '').strip()
         new_data = json.loads(clean_text)
 
-        global DB_CACHE, STYLED_NAMES_CACHE
         latest_db = await get_latest_github_db()
         if not latest_db:
             latest_db = DB_CACHE
@@ -405,12 +401,12 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await m.edit_text(f"❌ Data Format Error: {e}")
 
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global DB_CACHE, STYLED_NAMES_CACHE
     t = " ".join(context.args).strip()
     if not t:
         return await update.message.reply_text("💡 उपयोग: /delete TopicName")
 
     m = await update.message.reply_text(f"🛡️ Deleting {t} safely...")
-    global DB_CACHE, STYLED_NAMES_CACHE
     latest_db = await get_latest_github_db()
     if not latest_db:
         latest_db = DB_CACHE
@@ -451,6 +447,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(welcome, reply_markup=markup)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global DB_CACHE
     query = update.callback_query
     data = query.data
     user_id = query.from_user.id
@@ -460,7 +457,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer()
         return
 
-    # 🌟 किसी विषय पर क्लिक करने पर सब-ऑप्शंस दिखाना (मुख्य क्विज़ और कमजोर सवाल)
     if data.startswith("opt_"):
         main_topic = data[4:]
         weak_topic_key = f"{main_topic} (कमजोर सवाल)"
@@ -470,11 +466,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         keyboard = []
 
-        # 1. अगर इस पर्टिकुलर टॉपिक में मार्क किए गए कमजोर सवाल हैं, तो सबसे ऊपर दिखाओ
         if weak_q_count > 0:
             keyboard.append([InlineKeyboardButton(f"⭐ 🔖 {main_topic} (कमजोर सवाल) [{weak_q_count}Q]", callback_data=f"tp_{weak_topic_key}")])
 
-        # 2. मुख्य सवालों का बटन
         keyboard.append([InlineKeyboardButton(f"▶️ {main_topic} के सभी सवाल [{main_q_count}Q]", callback_data=f"tp_{main_topic}")])
         keyboard.append([InlineKeyboardButton("⬅️ मुख्य मेन्यू में वापस जाएं", callback_data="back_to_main")])
 
@@ -488,7 +482,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(welcome, reply_markup=markup)
         return
 
-    # 📌 पर्टिकुलर सब-टॉपिक के अनुसार कमजोर सवाल में सेव करना (GitHub Database Sync)
     if data == "mark_weak_perm":
         current_q = context.user_data.get('current_question')
         main_topic = context.user_data.get('topic')
@@ -498,7 +491,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if current_q and main_topic:
             weak_topic_key = f"{main_topic} (कमजोर सवाल)"
-            global DB_CACHE
             latest_db = await get_latest_github_db()
             if not latest_db:
                 latest_db = DB_CACHE
