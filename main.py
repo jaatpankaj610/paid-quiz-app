@@ -346,11 +346,11 @@ async def reset_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def refresh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("📡 Syncing Database...")
     if await sync_db():
-        total_topics = len(DB_CACHE.keys())
+        total_topics = len([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
         total_qs = sum(len(v) for v in DB_CACHE.values())
         res = (
             "╔════════════════════╗\n 🔄 REFRESH SUCCESS 🔄 \n╚════════════════════╝\n"
-            f"\n📂 कुल विषय: {total_topics} | 📊 कुल सवाल: {total_qs}\n\n/start पर क्लिक करें।"
+            f"\n📂 कुल मुख्य विषय: {total_topics} | 📊 कुल सवाल: {total_qs}\n\n/start पर क्लिक करें।"
         )
         await msg.edit_text(res)
     else:
@@ -387,10 +387,10 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if saved:
             DB_CACHE = latest_db
             STYLED_NAMES_CACHE.clear()
-            total_topics = len(DB_CACHE.keys())
+            total_topics = len([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
             await m.edit_text(
                 "╔════════════════════╗\n  🚀 SUCCESSFULLY ADDED! 🚀  \n╚════════════════════╝\n"
-                f"📦 कुल सुरक्षित विषय: {total_topics}"
+                f"📦 कुल सुरक्षित मुख्य विषय: {total_topics}"
             )
             markup = build_topics_keyboard(page=0)
             await update.message.reply_text("🎯 अपडेटेड विषय सूची:", reply_markup=markup)
@@ -413,17 +413,47 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if t in latest_db:
         del latest_db[t]
+        weak_key = f"{t} (कमजोर सवाल)"
+        if weak_key in latest_db:
+            del latest_db[weak_key]
+
         saved = await save_to_github_safely(latest_db, f"Deleted Topic: {t}")
         if saved:
             DB_CACHE = latest_db
             STYLED_NAMES_CACHE.clear()
-            await m.edit_text(f"✅ DELETED: {t}\n\nबाकी सभी विषय सुरक्षित हैं!")
+            await m.edit_text(f"✅ DELETED: {t}\n\nमूल विषय और कमजोर सवाल दोनों डिलीट हो गए!")
             markup = build_topics_keyboard(page=0)
             await update.message.reply_text("🎯 अपडेटेड विषय सूची:", reply_markup=markup)
         else:
             await m.edit_text("❌ डिलीट करने में विफल! GitHub कनेक्ट नहीं हुआ।")
     else:
         await m.edit_text(f"❌ विषय '{t}' डेटाबेस में नहीं मिला! कृपया सही नाम लिखें।")
+
+# ⚡⚡ नयी कमांड: सिर्फ कमजोर सवाल की लिस्ट डिलीट करने के लिए ⚡⚡
+async def delete_weak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global DB_CACHE, STYLED_NAMES_CACHE
+    t = " ".join(context.args).strip()
+    if not t:
+        return await update.message.reply_text("💡 उपयोग: /delete_weak TopicName\n(उदाहरण: /delete_weak राजस्थान भूगोल)")
+
+    weak_key = f"{t} (कमजोर सवाल)"
+    m = await update.message.reply_text(f"🗑️ Deleting Weak Questions for '{t}'...")
+    
+    latest_db = await get_latest_github_db()
+    if not latest_db:
+        latest_db = DB_CACHE
+
+    if weak_key in latest_db:
+        del latest_db[weak_key]
+        saved = await save_to_github_safely(latest_db, f"Deleted Weak List for: {t}")
+        if saved:
+            DB_CACHE = latest_db
+            STYLED_NAMES_CACHE.clear()
+            await m.edit_text(f"✅ **'{t}' के सभी कमजोर सवाल डिलीट कर दिए गए हैं!**\n\n(मूल विषय '{t}' पूरी तरह सुरक्षित है।)", parse_mode="Markdown")
+        else:
+            await m.edit_text("❌ GitHub अपडेट करने में समस्या आई।")
+    else:
+        await m.edit_text(f"⚠️ '{t}' के लिए कोई कमजोर सवाल की लिस्ट नहीं मिली।")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
@@ -449,12 +479,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global DB_CACHE
     query = update.callback_query
+    
+    # ⚡⚡ Instant Ultra-Fast Response (Microsecond Response & Vibration Trigger) ⚡⚡
+    try:
+        await query.answer(cache_time=0)
+    except Exception:
+        pass
+
     data = query.data
     user_id = query.from_user.id
     chat_id = query.message.chat_id
 
     if data == "noop":
-        await query.answer()
         return
 
     if data.startswith("opt_"):
@@ -491,28 +527,31 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if current_q and main_topic:
             weak_topic_key = f"{main_topic} (कमजोर सवाल)"
-            latest_db = await get_latest_github_db()
-            if not latest_db:
-                latest_db = DB_CACHE
+            
+            if weak_topic_key not in DB_CACHE:
+                DB_CACHE[weak_topic_key] = []
 
-            if weak_topic_key not in latest_db:
-                latest_db[weak_topic_key] = []
+            if current_q not in DB_CACHE[weak_topic_key]:
+                DB_CACHE[weak_topic_key].append(current_q)
+                
+                await context.bot.send_message(chat_id, f"✅ **सवाल '{main_topic}' के कमजोर बटन में जुड़ गया!**", parse_mode="Markdown")
 
-            if current_q not in latest_db[weak_topic_key]:
-                latest_db[weak_topic_key].append(current_q)
-                saved = await save_to_github_safely(latest_db, f"Added Weak Question to {weak_topic_key}")
-                if saved:
-                    DB_CACHE = latest_db
-                    await query.answer(f"📌 सवाल '{weak_topic_key}' के बटन में स्थायी रूप से जुड़ गया!", show_alert=True)
-                else:
-                    await query.answer("❌ सेव करने में दिक्कत आई!", show_alert=True)
+                async def async_save():
+                    latest_db = await get_latest_github_db()
+                    if not latest_db:
+                        latest_db = DB_CACHE
+                    if weak_topic_key not in latest_db:
+                        latest_db[weak_topic_key] = []
+                    if current_q not in latest_db[weak_topic_key]:
+                        latest_db[weak_topic_key].append(current_q)
+                    await save_to_github_safely(latest_db, f"Added Weak Question to {weak_topic_key}")
+                
+                asyncio.create_task(async_save())
             else:
-                await query.answer("⚠️ यह सवाल पहले से ही इस विषय की कमजोर लिस्ट में मौजूद है!", show_alert=False)
+                await context.bot.send_message(chat_id, "⚠️ **यह सवाल पहले से ही कमजोर लिस्ट में मौजूद है!**", parse_mode="Markdown")
         else:
-            await query.answer("❌ सवाल का विषय उपलब्ध नहीं है।", show_alert=False)
+            await context.bot.send_message(chat_id, "❌ **सवाल का विषय उपलब्ध नहीं है।**", parse_mode="Markdown")
         return
-
-    await query.answer()
 
     if data == "super_reset":
         class TU:
@@ -601,6 +640,7 @@ def main():
     app.add_handler(CommandHandler("refresh", refresh_cmd))
     app.add_handler(CommandHandler("reset", reset_bot))
     app.add_handler(CommandHandler("delete", delete_cmd))
+    app.add_handler(CommandHandler("delete_weak", delete_weak_cmd)) # ⚡ नयी कमांड जोड़ी गई
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(PollAnswerHandler(handle_poll_answer))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
