@@ -449,12 +449,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global DB_CACHE
     query = update.callback_query
+    
+    # ⚡⚡ FASTEST RESPONSE (Microsecond Speed & Vibration trigger) ⚡⚡
+    try:
+        await query.answer()
+    except Exception:
+        pass
+
     data = query.data
     user_id = query.from_user.id
     chat_id = query.message.chat_id
 
     if data == "noop":
-        await query.answer()
         return
 
     if data.startswith("opt_"):
@@ -482,6 +488,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(welcome, reply_markup=markup)
         return
 
+    # 📌 माइक्रो-सेकंड में जवाब देना + बैकग्राउंड में GitHub Sync करना
     if data == "mark_weak_perm":
         current_q = context.user_data.get('current_question')
         main_topic = context.user_data.get('topic')
@@ -491,28 +498,33 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         if current_q and main_topic:
             weak_topic_key = f"{main_topic} (कमजोर सवाल)"
-            latest_db = await get_latest_github_db()
-            if not latest_db:
-                latest_db = DB_CACHE
+            
+            if weak_topic_key not in DB_CACHE:
+                DB_CACHE[weak_topic_key] = []
 
-            if weak_topic_key not in latest_db:
-                latest_db[weak_topic_key] = []
+            if current_q not in DB_CACHE[weak_topic_key]:
+                DB_CACHE[weak_topic_key].append(current_q)
+                
+                # Fast Alert to user
+                await context.bot.send_message(chat_id, f"✅ **सवाल '{main_topic}' के कमजोर बटन में जुड़ गया!**", parse_mode="Markdown")
 
-            if current_q not in latest_db[weak_topic_key]:
-                latest_db[weak_topic_key].append(current_q)
-                saved = await save_to_github_safely(latest_db, f"Added Weak Question to {weak_topic_key}")
-                if saved:
-                    DB_CACHE = latest_db
-                    await query.answer(f"📌 सवाल '{weak_topic_key}' के बटन में स्थायी रूप से जुड़ गया!", show_alert=True)
-                else:
-                    await query.answer("❌ सेव करने में दिक्कत आई!", show_alert=True)
+                # GitHub पर बैकग्राउंड में सेव होगा ताकि बोट स्लो न हो
+                async def async_save():
+                    latest_db = await get_latest_github_db()
+                    if not latest_db:
+                        latest_db = DB_CACHE
+                    if weak_topic_key not in latest_db:
+                        latest_db[weak_topic_key] = []
+                    if current_q not in latest_db[weak_topic_key]:
+                        latest_db[weak_topic_key].append(current_q)
+                    await save_to_github_safely(latest_db, f"Added Weak Question to {weak_topic_key}")
+                
+                asyncio.create_task(async_save())
             else:
-                await query.answer("⚠️ यह सवाल पहले से ही इस विषय की कमजोर लिस्ट में मौजूद है!", show_alert=False)
+                await context.bot.send_message(chat_id, "⚠️ **यह सवाल पहले से ही कमजोर लिस्ट में मौजूद है!**", parse_mode="Markdown")
         else:
-            await query.answer("❌ सवाल का विषय उपलब्ध नहीं है।", show_alert=False)
+            await context.bot.send_message(chat_id, "❌ **सवाल का विषय उपलब्ध नहीं है।**", parse_mode="Markdown")
         return
-
-    await query.answer()
 
     if data == "super_reset":
         class TU:
