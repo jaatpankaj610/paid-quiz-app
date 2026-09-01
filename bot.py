@@ -180,26 +180,16 @@ def build_topics_keyboard(page: int = 0):
     KEYBOARD_CACHE[page] = res
     return res
 
-# 🛡️ AUTO-RECOVERY WATCHDOG TASK (इंटरनेट ऑन-ऑफ होने पर भी अटकने नहीं देगा)
-async def auto_recovery_watchdog(context: ContextTypes.DEFAULT_TYPE, poll_id: str, current_idx: int, chat_id: int, user_id: int):
-    await asyncio.sleep(12)  # 12 सेकंड का ग्रेस टाइम
-    if poll_id in POLL_TRACKER:
-        user_data = context.application.user_data.get(user_id)
-        if user_data and user_data.get('busy') and user_data.get('idx') == current_idx:
-            logger.warning(f"⚠️ Network drop detected for Poll {poll_id}. Auto-advancing...")
-            POLL_TRACKER.pop(poll_id, None)
-            user_data['sending_lock'] = False
-            asyncio.create_task(send_next_quiz(context, chat_id, user_id))
-
 # --- QUIZ ENGINE ---
 async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     user_data = context.application.user_data.get(user_id)
     if not user_data or not user_data.get('busy'):
         return
 
+    # अगर भेजने की प्रक्रिया लॉक है, तो पहले सुरक्षित अनलॉक करें
     if user_data.get('sending_lock', False):
-        return
-        
+        user_data['sending_lock'] = False
+
     user_data['sending_lock'] = True
 
     try:
@@ -247,6 +237,7 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
                 q = DB_CACHE[topic][q_idx]
         except Exception:
             user_data['idx'] = idx + 1
+            user_data['sending_lock'] = False
             asyncio.create_task(send_next_quiz(context, chat_id, user_id))
             return
 
@@ -291,8 +282,8 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             correct_option_id=correct_option_id,
             is_anonymous=False,
             reply_markup=bookmark_btn,
-            read_timeout=10,
-            write_timeout=10
+            read_timeout=15,
+            write_timeout=15
         )
 
         user_data['idx'] = idx + 1
@@ -305,12 +296,11 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             "topic": topic
         }
 
-        # ⚡ नेटवर्क ड्रॉप रिकवरी चालू करें
-        asyncio.create_task(auto_recovery_watchdog(context, message.poll.id, user_data['idx'], chat_id, user_id))
-
     except Exception as e:
         logger.error(f"Quiz Sending Error: {e}")
         if user_data:
+            # एरर आने पर लॉक रिलीज़ करके अगला प्रयास करें ताकि बॉट कभी भी अटके न
+            user_data['sending_lock'] = False
             user_data['idx'] = user_data.get('idx', 0) + 1
             asyncio.create_task(send_next_quiz(context, chat_id, user_id))
     finally:
@@ -324,13 +314,23 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     poll_answer = update.poll_answer
     poll_id = poll_answer.poll_id
 
+    # अगर ट्रैकर में Poll न मिले तब भी पुराना ट्रैकर डेटा क्लियर रखें
     if poll_id not in POLL_TRACKER:
+        user_id = poll_answer.user.id
+        user_data = context.application.user_data.get(user_id)
+        if user_data and user_data.get('busy'):
+            user_data['sending_lock'] = False
+            asyncio.create_task(send_next_quiz(context, poll_answer.user.id, user_id))
         return
 
     tracker = POLL_TRACKER.pop(poll_id)
     user_id = tracker["user_id"]
     chat_id = tracker["chat_id"]
     correct_option_id = tracker["correct_option_id"]
+    
+    if not poll_answer.option_ids:
+        return
+        
     selected_option = poll_answer.option_ids[0]
 
     if user_id not in USER_LOCKS:
@@ -346,6 +346,7 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     user_data['wrong_qs'] = []
                 user_data['wrong_qs'].append(tracker["q_data"])
 
+            user_data['sending_lock'] = False
             await send_next_quiz(context, chat_id, user_id)
 
 # --- Commands ---
