@@ -180,6 +180,17 @@ def build_topics_keyboard(page: int = 0):
     KEYBOARD_CACHE[page] = res
     return res
 
+# 🛡️ AUTO-RECOVERY WATCHDOG TASK (इंटरनेट ऑन-ऑफ होने पर भी अटकने नहीं देगा)
+async def auto_recovery_watchdog(context: ContextTypes.DEFAULT_TYPE, poll_id: str, current_idx: int, chat_id: int, user_id: int):
+    await asyncio.sleep(12)  # 12 सेकंड का ग्रेस टाइम
+    if poll_id in POLL_TRACKER:
+        user_data = context.application.user_data.get(user_id)
+        if user_data and user_data.get('busy') and user_data.get('idx') == current_idx:
+            logger.warning(f"⚠️ Network drop detected for Poll {poll_id}. Auto-advancing...")
+            POLL_TRACKER.pop(poll_id, None)
+            user_data['sending_lock'] = False
+            asyncio.create_task(send_next_quiz(context, chat_id, user_id))
+
 # --- QUIZ ENGINE ---
 async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     user_data = context.application.user_data.get(user_id)
@@ -284,7 +295,8 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             write_timeout=10
         )
 
-        # ⚡ TOPIC BACKUP TRACKER (सुरक्षा के लिए विषय भी स्टोर किया गया है)
+        user_data['idx'] = idx + 1
+
         POLL_TRACKER[message.poll.id] = {
             "user_id": user_id,
             "chat_id": chat_id,
@@ -293,7 +305,8 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             "topic": topic
         }
 
-        user_data['idx'] = idx + 1
+        # ⚡ नेटवर्क ड्रॉप रिकवरी चालू करें
+        asyncio.create_task(auto_recovery_watchdog(context, message.poll.id, user_data['idx'], chat_id, user_id))
 
     except Exception as e:
         logger.error(f"Quiz Sending Error: {e}")
@@ -489,7 +502,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global DB_CACHE
     query = update.callback_query
     
-    # ⚡ 0-Latency Callback Answer (Non-blocking)
     asyncio.create_task(query.answer())
 
     data = query.data
@@ -530,12 +542,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(query.edit_message_text(welcome, reply_markup=markup))
         return
 
-    # 🛡️ 100% NON-STOP MARK WEAK HANDLING 🛡️
     if data == "mark_weak_perm":
         current_q = context.user_data.get('current_question')
         main_topic = context.user_data.get('topic')
         
-        # Backup Check: अगर context खाली हो तो RAM से Topic खोजें
         if not main_topic:
             for p_info in POLL_TRACKER.values():
                 if p_info.get("user_id") == user_id:
@@ -556,10 +566,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 DB_CACHE[weak_topic_key].append(current_q)
                 KEYBOARD_CACHE.clear()
                 
-                # तुरंत उत्तर भेजें (Zero Delay)
                 asyncio.create_task(context.bot.send_message(chat_id, f"✅ **सवाल '{main_topic}' के कमजोर बटन में जुड़ गया!**", parse_mode="Markdown"))
 
-                # ⚡ GitHub sync background task में होगा (कोई bot freeze नहीं होगा)
                 async def async_bg_save():
                     try:
                         latest_db = await get_latest_github_db()
