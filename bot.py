@@ -180,17 +180,11 @@ def build_topics_keyboard(page: int = 0):
     KEYBOARD_CACHE[page] = res
     return res
 
-# --- QUIZ ENGINE ---
+# --- ULTRA FAST QUIZ ENGINE ---
 async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     user_data = context.application.user_data.get(user_id)
     if not user_data or not user_data.get('busy'):
         return
-
-    # अगर भेजने की प्रक्रिया लॉक है, तो पहले सुरक्षित अनलॉक करें
-    if user_data.get('sending_lock', False):
-        user_data['sending_lock'] = False
-
-    user_data['sending_lock'] = True
 
     try:
         idx = user_data.get('idx', 0)
@@ -237,7 +231,6 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
                 q = DB_CACHE[topic][q_idx]
         except Exception:
             user_data['idx'] = idx + 1
-            user_data['sending_lock'] = False
             asyncio.create_task(send_next_quiz(context, chat_id, user_id))
             return
 
@@ -274,6 +267,7 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             [InlineKeyboardButton("🔖 मार्क करें (कमजोर सवाल लिस्ट में जोड़ें)", callback_data="mark_weak_perm")]
         ])
 
+        # ⚡ शून्य डिले टाइमआउट कॉन्फ़िगरेशन
         message = await context.bot.send_poll(
             chat_id=chat_id,
             question=q_header,
@@ -282,8 +276,9 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             correct_option_id=correct_option_id,
             is_anonymous=False,
             reply_markup=bookmark_btn,
-            read_timeout=15,
-            write_timeout=15
+            read_timeout=5,
+            write_timeout=5,
+            connect_timeout=5
         )
 
         user_data['idx'] = idx + 1
@@ -299,28 +294,15 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
     except Exception as e:
         logger.error(f"Quiz Sending Error: {e}")
         if user_data:
-            # एरर आने पर लॉक रिलीज़ करके अगला प्रयास करें ताकि बॉट कभी भी अटके न
-            user_data['sending_lock'] = False
             user_data['idx'] = user_data.get('idx', 0) + 1
             asyncio.create_task(send_next_quiz(context, chat_id, user_id))
-    finally:
-        if user_data:
-            user_data['sending_lock'] = False
 
-# --- Poll Answer Handler ---
-USER_LOCKS = {}
-
+# --- FAST POLL ANSWER HANDLER ---
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     poll_answer = update.poll_answer
     poll_id = poll_answer.poll_id
 
-    # अगर ट्रैकर में Poll न मिले तब भी पुराना ट्रैकर डेटा क्लियर रखें
     if poll_id not in POLL_TRACKER:
-        user_id = poll_answer.user.id
-        user_data = context.application.user_data.get(user_id)
-        if user_data and user_data.get('busy'):
-            user_data['sending_lock'] = False
-            asyncio.create_task(send_next_quiz(context, poll_answer.user.id, user_id))
         return
 
     tracker = POLL_TRACKER.pop(poll_id)
@@ -333,10 +315,11 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
     selected_option = poll_answer.option_ids[0]
 
-    if user_id not in USER_LOCKS:
-        USER_LOCKS[user_id] = asyncio.Lock()
+    # 🚀 ⚡ 1. अगले सवाल को तुरंत (Zero Latency) बैकग्राउंड में फायर करें
+    asyncio.create_task(send_next_quiz(context, chat_id, user_id))
 
-    async with USER_LOCKS[user_id]:
+    # 🔄 2. बैकग्राउंड टास्क (स्कोर अपडेट और रॉन्ग क्वैश्चन सेव)
+    async def process_stats_bg():
         user_data = context.application.user_data.get(user_id)
         if user_data and user_data.get('busy'):
             if selected_option == correct_option_id:
@@ -346,8 +329,7 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
                     user_data['wrong_qs'] = []
                 user_data['wrong_qs'].append(tracker["q_data"])
 
-            user_data['sending_lock'] = False
-            await send_next_quiz(context, chat_id, user_id)
+    asyncio.create_task(process_stats_bg())
 
 # --- Commands ---
 async def reset_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -613,8 +595,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'busy': True, 
             'topic': topic, 
             'wrong_qs': [],
-            'is_retry': False,
-            'sending_lock': False
+            'is_retry': False
         })
         asyncio.create_task(send_next_quiz(context, chat_id, user_id))
         return
@@ -636,8 +617,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'busy': True, 
             'topic': f"{topic} (गलत सवाल)", 
             'wrong_qs': [],
-            'is_retry': True,
-            'sending_lock': False
+            'is_retry': True
         })
         asyncio.create_task(send_next_quiz(context, chat_id, user_id))
         return
