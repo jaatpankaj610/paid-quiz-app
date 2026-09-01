@@ -15,7 +15,6 @@ from telegram.ext import (
     filters,
     ContextTypes
 )
-from telegram.error import RetryAfter, TimedOut, NetworkError
 
 # --- कॉन्फ़िगरेशन ---
 TOKEN = os.environ.get("BOT_TOKEN")
@@ -50,19 +49,15 @@ async def get_latest_github_db():
     }
     try:
         async with httpx.AsyncClient() as client:
-            ref_res = await client.get(f"https://api.github.com/repos/{REPO_NAME}/git/trees/main?recursive=1", headers=headers, timeout=8.0)
+            ref_res = await client.get(f"https://api.github.com/repos/{REPO_NAME}/git/trees/main?recursive=1", headers=headers, timeout=5.0)
             if ref_res.status_code == 200:
                 tree = ref_res.json().get("tree", [])
-                file_blob_sha = None
-                for item in tree:
-                    if item.get("path") == DB_FILE:
-                        file_blob_sha = item.get("sha")
-                        break
+                file_blob_sha = next((item.get("sha") for item in tree if item.get("path") == DB_FILE), None)
                 
                 if file_blob_sha:
                     blob_headers = headers.copy()
                     blob_headers["Accept"] = "application/vnd.github.v3.raw"
-                    blob_res = await client.get(f"https://api.github.com/repos/{REPO_NAME}/git/blobs/{file_blob_sha}", headers=blob_headers, timeout=8.0)
+                    blob_res = await client.get(f"https://api.github.com/repos/{REPO_NAME}/git/blobs/{file_blob_sha}", headers=blob_headers, timeout=5.0)
                     if blob_res.status_code == 200:
                         return json.loads(blob_res.text)
     except Exception as e:
@@ -77,7 +72,7 @@ async def save_to_github_safely(data_to_save, commit_msg):
     try:
         content_str = json.dumps(data_to_save, indent=2, ensure_ascii=False)
         async with httpx.AsyncClient() as client:
-            ref_res = await client.get(f"https://api.github.com/repos/{REPO_NAME}/git/ref/heads/main", headers=headers, timeout=8.0)
+            ref_res = await client.get(f"https://api.github.com/repos/{REPO_NAME}/git/ref/heads/main", headers=headers, timeout=5.0)
             if ref_res.status_code != 200: return False
             latest_commit_sha = ref_res.json()["object"]["sha"]
 
@@ -85,7 +80,7 @@ async def save_to_github_safely(data_to_save, commit_msg):
                 f"https://api.github.com/repos/{REPO_NAME}/git/blobs",
                 headers=headers,
                 json={"content": content_str, "encoding": "utf-8"},
-                timeout=10.0
+                timeout=5.0
             )
             if blob_res.status_code != 201: return False
             blob_sha = blob_res.json()["sha"]
@@ -97,7 +92,7 @@ async def save_to_github_safely(data_to_save, commit_msg):
                     "base_tree": latest_commit_sha,
                     "tree": [{"path": DB_FILE, "mode": "100644", "type": "blob", "sha": blob_sha}]
                 },
-                timeout=8.0
+                timeout=5.0
             )
             if tree_res.status_code != 201: return False
             new_tree_sha = tree_res.json()["sha"]
@@ -106,7 +101,7 @@ async def save_to_github_safely(data_to_save, commit_msg):
                 f"https://api.github.com/repos/{REPO_NAME}/git/commits",
                 headers=headers,
                 json={"message": commit_msg, "tree": new_tree_sha, "parents": [latest_commit_sha]},
-                timeout=8.0
+                timeout=5.0
             )
             if commit_res.status_code != 201: return False
             new_commit_sha = commit_res.json()["sha"]
@@ -115,7 +110,7 @@ async def save_to_github_safely(data_to_save, commit_msg):
                 f"https://api.github.com/repos/{REPO_NAME}/git/refs/heads/main",
                 headers=headers,
                 json={"sha": new_commit_sha},
-                timeout=8.0
+                timeout=5.0
             )
             return update_ref.status_code == 200
     except Exception as e:
@@ -180,7 +175,7 @@ def build_topics_keyboard(page: int = 0):
     KEYBOARD_CACHE[page] = res
     return res
 
-# --- QUIZ ENGINE ---
+# --- ULTRA-FAST QUIZ ENGINE ---
 async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
     user_data = context.application.user_data.get(user_id)
     if not user_data or not user_data.get('busy'):
@@ -197,7 +192,7 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
         
         if not user_data.get('is_retry') and (topic not in DB_CACHE or not DB_CACHE[topic]):
             user_data['busy'] = False
-            await context.bot.send_message(chat_id, "⚠️ डेटाबेस में बदलाव हुआ है। कृपया नए सिरे से विषय चुनें: /start")
+            asyncio.create_task(context.bot.send_message(chat_id, "⚠️ डेटाबेस में बदलाव हुआ है। /start"))
             return
 
         qs = user_data.get('wrong_qs_pool', []) if user_data.get('is_retry') else user_data.get('q_indices', [])
@@ -224,7 +219,7 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
                 keyboard.append([InlineKeyboardButton(f"🔄 गलत सवाल फिर से हल करें ({wrong_count})", callback_data="retry_wrong")])
 
             reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
-            await context.bot.send_message(chat_id, res, reply_markup=reply_markup)
+            asyncio.create_task(context.bot.send_message(chat_id, res, reply_markup=reply_markup))
             user_data['busy'] = False
             return
 
@@ -272,6 +267,7 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             [InlineKeyboardButton("🔖 मार्क करें (कमजोर सवाल लिस्ट में जोड़ें)", callback_data="mark_weak_perm")]
         ])
 
+        # ⚡ Zero Latency Network Dispatch
         message = await context.bot.send_poll(
             chat_id=chat_id,
             question=q_header,
@@ -280,11 +276,10 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             correct_option_id=correct_option_id,
             is_anonymous=False,
             reply_markup=bookmark_btn,
-            read_timeout=10,
-            write_timeout=10
+            read_timeout=5,
+            write_timeout=5
         )
 
-        # ⚡ TOPIC BACKUP TRACKER (सुरक्षा के लिए विषय भी स्टोर किया गया है)
         POLL_TRACKER[message.poll.id] = {
             "user_id": user_id,
             "chat_id": chat_id,
@@ -304,9 +299,7 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
         if user_data:
             user_data['sending_lock'] = False
 
-# --- Poll Answer Handler ---
-USER_LOCKS = {}
-
+# --- ULTRA-FAST POLL ANSWER HANDLER ---
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     poll_answer = update.poll_answer
     poll_id = poll_answer.poll_id
@@ -320,22 +313,19 @@ async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE)
     correct_option_id = tracker["correct_option_id"]
     selected_option = poll_answer.option_ids[0]
 
-    if user_id not in USER_LOCKS:
-        USER_LOCKS[user_id] = asyncio.Lock()
+    user_data = context.application.user_data.get(user_id)
+    if user_data and user_data.get('busy'):
+        if selected_option == correct_option_id:
+            user_data['score'] += 1
+        else:
+            if 'wrong_qs' not in user_data:
+                user_data['wrong_qs'] = []
+            user_data['wrong_qs'].append(tracker["q_data"])
 
-    async with USER_LOCKS[user_id]:
-        user_data = context.application.user_data.get(user_id)
-        if user_data and user_data.get('busy'):
-            if selected_option == correct_option_id:
-                user_data['score'] += 1
-            else:
-                if 'wrong_qs' not in user_data:
-                    user_data['wrong_qs'] = []
-                user_data['wrong_qs'].append(tracker["q_data"])
+        # ⚡ 0-Delay Instant Next Call
+        asyncio.create_task(send_next_quiz(context, chat_id, user_id))
 
-            await send_next_quiz(context, chat_id, user_id)
-
-# --- Commands ---
+# --- COMMANDS ---
 async def reset_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     m = await update.message.reply_text("🌀 Rebooting Bot...")
     try:
@@ -465,9 +455,6 @@ async def delete_weak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await m.edit_text(f"⚠️ '{t}' के लिए कोई कमजोर सवाल की लिस्ट नहीं मिली।")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message:
-        await update.message.reply_chat_action("typing")
-    
     context.user_data.clear()
 
     if not DB_CACHE:
@@ -489,7 +476,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global DB_CACHE
     query = update.callback_query
     
-    # ⚡ 0-Latency Callback Answer (Non-blocking)
+    # ⚡ Microsecond ACK
     asyncio.create_task(query.answer())
 
     data = query.data
@@ -530,12 +517,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         asyncio.create_task(query.edit_message_text(welcome, reply_markup=markup))
         return
 
-    # 🛡️ 100% NON-STOP MARK WEAK HANDLING 🛡️
     if data == "mark_weak_perm":
         current_q = context.user_data.get('current_question')
         main_topic = context.user_data.get('topic')
         
-        # Backup Check: अगर context खाली हो तो RAM से Topic खोजें
         if not main_topic:
             for p_info in POLL_TRACKER.values():
                 if p_info.get("user_id") == user_id:
@@ -556,10 +541,8 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 DB_CACHE[weak_topic_key].append(current_q)
                 KEYBOARD_CACHE.clear()
                 
-                # तुरंत उत्तर भेजें (Zero Delay)
                 asyncio.create_task(context.bot.send_message(chat_id, f"✅ **सवाल '{main_topic}' के कमजोर बटन में जुड़ गया!**", parse_mode="Markdown"))
 
-                # ⚡ GitHub sync background task में होगा (कोई bot freeze नहीं होगा)
                 async def async_bg_save():
                     try:
                         latest_db = await get_latest_github_db()
@@ -642,10 +625,9 @@ async def self_ping():
     async with httpx.AsyncClient() as client:
         while True:
             try:
-                await client.get(f"{RENDER_URL}/{TOKEN}", timeout=5.0)
-                logger.info("⚡ Heartbeat Sent: Server Kept Awake!")
-            except Exception as e:
-                logger.error(f"Heartbeat Error: {e}")
+                await client.get(f"{RENDER_URL}/{TOKEN}", timeout=3.0)
+            except Exception:
+                pass
             await asyncio.sleep(180)
 
 async def post_init(application: Application):
