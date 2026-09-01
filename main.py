@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 DB_CACHE = {}
 STYLED_NAMES_CACHE = {}
+KEYBOARD_CACHE = {} # ⚡ RAM Caching for Instant Page Transitions
 POLL_TRACKER = {}  
 TOPICS_PER_PAGE = 10 
 
@@ -122,11 +123,12 @@ async def save_to_github_safely(data_to_save, commit_msg):
         return False
 
 async def sync_db():
-    global DB_CACHE, STYLED_NAMES_CACHE
+    global DB_CACHE, STYLED_NAMES_CACHE, KEYBOARD_CACHE
     latest_db = await get_latest_github_db()
     if latest_db or latest_db == {}:
         DB_CACHE = latest_db
         STYLED_NAMES_CACHE.clear()
+        KEYBOARD_CACHE.clear()
         return True
     return False
 
@@ -137,10 +139,15 @@ SHAYARIS = [
 ]
 
 def build_topics_keyboard(page: int = 0):
+    if page in KEYBOARD_CACHE:
+        return KEYBOARD_CACHE[page]
+
     topics = sorted([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
 
     if not topics:
-        return InlineKeyboardMarkup([[InlineKeyboardButton("❌ कोई विषय नहीं मिला", callback_data="noop")]])
+        res = InlineKeyboardMarkup([[InlineKeyboardButton("❌ कोई विषय नहीं मिला", callback_data="noop")]])
+        KEYBOARD_CACHE[page] = res
+        return res
 
     total_topics = len(topics)
     total_pages = max(1, (total_topics + TOPICS_PER_PAGE - 1) // TOPICS_PER_PAGE)
@@ -169,7 +176,9 @@ def build_topics_keyboard(page: int = 0):
         keyboard.append(nav_buttons)
 
     keyboard.append([InlineKeyboardButton("⚡ SUPER RESET ⚡", callback_data="super_reset")])
-    return InlineKeyboardMarkup(keyboard)
+    res = InlineKeyboardMarkup(keyboard)
+    KEYBOARD_CACHE[page] = res
+    return res
 
 # --- QUIZ ENGINE ---
 async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
@@ -357,7 +366,7 @@ async def refresh_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text("❌ Sync Failed!")
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global DB_CACHE, STYLED_NAMES_CACHE
+    global DB_CACHE, STYLED_NAMES_CACHE, KEYBOARD_CACHE
     json_text = ""
     if update.message.document:
         f = await context.bot.get_file(update.message.document.file_id)
@@ -387,6 +396,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if saved:
             DB_CACHE = latest_db
             STYLED_NAMES_CACHE.clear()
+            KEYBOARD_CACHE.clear()
             total_topics = len([t for t in DB_CACHE.keys() if not t.endswith(" (कमजोर सवाल)")])
             await m.edit_text(
                 "╔════════════════════╗\n  🚀 SUCCESSFULLY ADDED! 🚀  \n╚════════════════════╝\n"
@@ -401,7 +411,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await m.edit_text(f"❌ Data Format Error: {e}")
 
 async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global DB_CACHE, STYLED_NAMES_CACHE
+    global DB_CACHE, STYLED_NAMES_CACHE, KEYBOARD_CACHE
     t = " ".join(context.args).strip()
     if not t:
         return await update.message.reply_text("💡 उपयोग: /delete TopicName")
@@ -421,6 +431,7 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if saved:
             DB_CACHE = latest_db
             STYLED_NAMES_CACHE.clear()
+            KEYBOARD_CACHE.clear()
             await m.edit_text(f"✅ DELETED: {t}\n\nमूल विषय और कमजोर सवाल दोनों डिलीट हो गए!")
             markup = build_topics_keyboard(page=0)
             await update.message.reply_text("🎯 अपडेटेड विषय सूची:", reply_markup=markup)
@@ -429,9 +440,8 @@ async def delete_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await m.edit_text(f"❌ विषय '{t}' डेटाबेस में नहीं मिला! कृपया सही नाम लिखें।")
 
-# ⚡⚡ नयी कमांड: सिर्फ कमजोर सवाल की लिस्ट डिलीट करने के लिए ⚡⚡
 async def delete_weak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global DB_CACHE, STYLED_NAMES_CACHE
+    global DB_CACHE, STYLED_NAMES_CACHE, KEYBOARD_CACHE
     t = " ".join(context.args).strip()
     if not t:
         return await update.message.reply_text("💡 उपयोग: /delete_weak TopicName\n(उदाहरण: /delete_weak राजस्थान भूगोल)")
@@ -449,6 +459,7 @@ async def delete_weak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if saved:
             DB_CACHE = latest_db
             STYLED_NAMES_CACHE.clear()
+            KEYBOARD_CACHE.clear()
             await m.edit_text(f"✅ **'{t}' के सभी कमजोर सवाल डिलीट कर दिए गए हैं!**\n\n(मूल विषय '{t}' पूरी तरह सुरक्षित है।)", parse_mode="Markdown")
         else:
             await m.edit_text("❌ GitHub अपडेट करने में समस्या आई।")
@@ -480,17 +491,28 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global DB_CACHE
     query = update.callback_query
     
-    # ⚡⚡ Instant Ultra-Fast Response (Microsecond Response & Vibration Trigger) ⚡⚡
-    try:
-        await query.answer(cache_time=0)
-    except Exception:
-        pass
+    # ⚡ 0-Latency Callback ACK Task (Non-blocking)
+    asyncio.create_task(query.answer())
 
     data = query.data
     user_id = query.from_user.id
     chat_id = query.message.chat_id
 
     if data == "noop":
+        return
+
+    # ⚡⚡ INSTANT PAGE TRANSITION (Next / Prev) ⚡⚡
+    if data.startswith("page_"):
+        page = int(data.split("_")[1])
+        markup = build_topics_keyboard(page=page)
+        
+        async def fast_edit():
+            try:
+                await query.edit_message_reply_markup(reply_markup=markup)
+            except Exception:
+                pass
+
+        asyncio.create_task(fast_edit())
         return
 
     if data.startswith("opt_"):
@@ -509,13 +531,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("⬅️ मुख्य मेन्यू में वापस जाएं", callback_data="back_to_main")])
 
         markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text(f"📌 विषय: **{main_topic}**\n\nनीचे दिए गए विकल्पों में से चुनें: 👇", reply_markup=markup, parse_mode="Markdown")
+        asyncio.create_task(query.edit_message_text(f"📌 विषय: **{main_topic}**\n\nनीचे दिए गए विकल्पों में से चुनें: 👇", reply_markup=markup, parse_mode="Markdown"))
         return
 
     if data == "back_to_main":
         markup = build_topics_keyboard(page=0)
         welcome = "🎯 अपनी पसंद का विषय चुनें: 👇"
-        await query.edit_message_text(welcome, reply_markup=markup)
+        asyncio.create_task(query.edit_message_text(welcome, reply_markup=markup))
         return
 
     if data == "mark_weak_perm":
@@ -533,6 +555,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
             if current_q not in DB_CACHE[weak_topic_key]:
                 DB_CACHE[weak_topic_key].append(current_q)
+                KEYBOARD_CACHE.clear()
                 
                 await context.bot.send_message(chat_id, f"✅ **सवाल '{main_topic}' के कमजोर बटन में जुड़ गया!**", parse_mode="Markdown")
 
@@ -557,15 +580,6 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         class TU:
             def __init__(self, m): self.message = m
         await reset_bot(TU(query.message), context)
-        return
-
-    if data.startswith("page_"):
-        page = int(data.split("_")[1])
-        markup = build_topics_keyboard(page=page)
-        try:
-            await query.edit_message_reply_markup(reply_markup=markup)
-        except Exception:
-            pass
         return
 
     if data.startswith("tp_"):
@@ -640,7 +654,7 @@ def main():
     app.add_handler(CommandHandler("refresh", refresh_cmd))
     app.add_handler(CommandHandler("reset", reset_bot))
     app.add_handler(CommandHandler("delete", delete_cmd))
-    app.add_handler(CommandHandler("delete_weak", delete_weak_cmd)) # ⚡ नयी कमांड जोड़ी गई
+    app.add_handler(CommandHandler("delete_weak", delete_weak_cmd))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_handler(PollAnswerHandler(handle_poll_answer))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_input))
