@@ -5,6 +5,7 @@ import random
 import logging
 import asyncio
 import httpx
+import html
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Poll
 from telegram.ext import (
     Application,
@@ -32,6 +33,7 @@ STYLED_NAMES_CACHE = {}
 KEYBOARD_CACHE = {}
 POLL_TRACKER = {}  
 TOPICS_PER_PAGE = 10 
+USER_LOCKS = {}
 
 def style_txt(text):
     if text in STYLED_NAMES_CACHE:
@@ -299,7 +301,6 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
     except Exception as e:
         logger.error(f"Quiz Sending Error: {e}")
         if user_data:
-            # एरर आने पर लॉक रिलीज़ करके अगला प्रयास करें ताकि बॉट कभी भी अटके न
             user_data['sending_lock'] = False
             user_data['idx'] = user_data.get('idx', 0) + 1
             asyncio.create_task(send_next_quiz(context, chat_id, user_id))
@@ -308,13 +309,10 @@ async def send_next_quiz(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_
             user_data['sending_lock'] = False
 
 # --- Poll Answer Handler ---
-USER_LOCKS = {}
-
 async def handle_poll_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     poll_answer = update.poll_answer
     poll_id = poll_answer.poll_id
 
-    # अगर ट्रैकर में Poll न मिले तब भी पुराना ट्रैकर डेटा क्लियर रखें
     if poll_id not in POLL_TRACKER:
         user_id = poll_answer.user.id
         user_data = context.application.user_data.get(user_id)
@@ -355,10 +353,15 @@ async def reset_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         await context.bot.delete_webhook(drop_pending_updates=True)
         await asyncio.sleep(0.1)
-        await context.bot.set_webhook(url=f"{RENDER_URL}/{TOKEN}", drop_pending_updates=True)
+        await context.bot.set_webhook(
+            url=f"{RENDER_URL}/{TOKEN}", 
+            drop_pending_updates=True,
+            allowed_updates=["message", "callback_query", "poll_answer"]
+        )
         await sync_db()
         context.user_data.clear()
         POLL_TRACKER.clear()
+        USER_LOCKS.clear()
         res = "╔════════════════════╗\n  ⚡ BOT IS ALIVE NOW ⚡ \n╚════════════════════╝\n✅ सारे जाम साफ़ हो गए हैं!"
         await m.edit_text(res)
     except Exception as e:
@@ -478,11 +481,21 @@ async def delete_weak_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await m.edit_text(f"⚠️ '{t}' के लिए कोई कमजोर सवाल की लिस्ट नहीं मिली।")
 
+# --- START COMMAND (स्वतः ऑटो-रीसेट और क्लियर फ़ीचर जोड़ा गया) ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message:
         await update.message.reply_chat_action("typing")
     
+    user_id = update.effective_user.id
+    
+    # ⚡ ऑटो-रीसेट: पुराने सभी अटके हुए लॉक्स और स्टेट्स को तुरंत साफ़ करना
     context.user_data.clear()
+    USER_LOCKS.pop(user_id, None)
+    
+    # उस यूज़र के पुराने फँसे हुए पोल्स को साफ़ करना
+    stale_polls = [pid for pid, info in POLL_TRACKER.items() if info.get("user_id") == user_id]
+    for pid in stale_polls:
+        POLL_TRACKER.pop(pid, None)
 
     if not DB_CACHE:
         await sync_db()
@@ -499,11 +512,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     markup = build_topics_keyboard(page=0)
     await update.message.reply_text(welcome, reply_markup=markup)
 
+# --- CALLBACK QUERY HANDLER (बटन क्लिक फिक्स) ---
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global DB_CACHE
     query = update.callback_query
     
-    asyncio.create_task(query.answer())
+    try:
+        await query.answer()
+    except Exception:
+        pass
 
     data = query.data
     user_id = query.from_user.id
@@ -512,135 +529,147 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data == "noop":
         return
 
-    if data.startswith("page_"):
-        page = int(data.split("_")[1])
-        markup = build_topics_keyboard(page=page)
-        asyncio.create_task(query.edit_message_reply_markup(reply_markup=markup))
-        return
+    try:
+        if data.startswith("page_"):
+            page = int(data.split("_")[1])
+            markup = build_topics_keyboard(page=page)
+            await query.edit_message_reply_markup(reply_markup=markup)
+            return
 
-    if data.startswith("opt_"):
-        main_topic = data[4:]
-        weak_topic_key = f"{main_topic} (कमजोर सवाल)"
-        
-        main_q_count = len(DB_CACHE.get(main_topic, []))
-        weak_q_count = len(DB_CACHE.get(weak_topic_key, []))
-
-        keyboard = []
-
-        if weak_q_count > 0:
-            keyboard.append([InlineKeyboardButton(f"⭐ 🔖 {main_topic} (कमजोर सवाल) [{weak_q_count}Q]", callback_data=f"tp_{weak_topic_key}")])
-
-        keyboard.append([InlineKeyboardButton(f"▶️ {main_topic} के सभी सवाल [{main_q_count}Q]", callback_data=f"tp_{main_topic}")])
-        keyboard.append([InlineKeyboardButton("⬅️ मुख्य मेन्यू में वापस जाएं", callback_data="back_to_main")])
-
-        markup = InlineKeyboardMarkup(keyboard)
-        asyncio.create_task(query.edit_message_text(f"📌 विषय: **{main_topic}**\n\nनीचे दिए गए विकल्पों में से चुनें: 👇", reply_markup=markup, parse_mode="Markdown"))
-        return
-
-    if data == "back_to_main":
-        markup = build_topics_keyboard(page=0)
-        welcome = "🎯 अपनी पसंद का विषय चुनें: 👇"
-        asyncio.create_task(query.edit_message_text(welcome, reply_markup=markup))
-        return
-
-    if data == "mark_weak_perm":
-        current_q = context.user_data.get('current_question')
-        main_topic = context.user_data.get('topic')
-        
-        if not main_topic:
-            for p_info in POLL_TRACKER.values():
-                if p_info.get("user_id") == user_id:
-                    main_topic = p_info.get("topic")
-                    current_q = p_info.get("q_data")
-                    break
-
-        if main_topic and main_topic.endswith(" (कमजोर सवाल)"):
-            main_topic = main_topic.replace(" (कमजोर सवाल)", "")
-
-        if current_q and main_topic:
+        if data.startswith("opt_"):
+            main_topic = data[4:]
             weak_topic_key = f"{main_topic} (कमजोर सवाल)"
             
-            if weak_topic_key not in DB_CACHE:
-                DB_CACHE[weak_topic_key] = []
+            main_q_count = len(DB_CACHE.get(main_topic, []))
+            weak_q_count = len(DB_CACHE.get(weak_topic_key, []))
 
-            if current_q not in DB_CACHE[weak_topic_key]:
-                DB_CACHE[weak_topic_key].append(current_q)
-                KEYBOARD_CACHE.clear()
+            keyboard = []
+
+            if weak_q_count > 0:
+                keyboard.append([InlineKeyboardButton(f"⭐ 🔖 {main_topic} (कमजोर सवाल) [{weak_q_count}Q]", callback_data=f"tp_{weak_topic_key}")])
+
+            keyboard.append([InlineKeyboardButton(f"▶️ {main_topic} के सभी सवाल [{main_q_count}Q]", callback_data=f"tp_{main_topic}")])
+            keyboard.append([InlineKeyboardButton("⬅️ मुख्य मेन्यू में वापस जाएं", callback_data="back_to_main")])
+
+            markup = InlineKeyboardMarkup(keyboard)
+            
+            # ⚡ HTML Escape: GK_Class_00002 के अंडरस्कोर (_) से अब कभी एरर नहीं आएगा
+            safe_topic_title = html.escape(main_topic)
+            await query.edit_message_text(
+                f"📌 विषय: <b>{safe_topic_title}</b>\n\nनीचे दिए गए विकल्पों में से चुनें: 👇", 
+                reply_markup=markup, 
+                parse_mode="HTML"
+            )
+            return
+
+        if data == "back_to_main":
+            markup = build_topics_keyboard(page=0)
+            welcome = "🎯 अपनी पसंद का विषय चुनें: 👇"
+            await query.edit_message_text(welcome, reply_markup=markup)
+            return
+
+        if data == "mark_weak_perm":
+            current_q = context.user_data.get('current_question')
+            main_topic = context.user_data.get('topic')
+            
+            if not main_topic:
+                for p_info in POLL_TRACKER.values():
+                    if p_info.get("user_id") == user_id:
+                        main_topic = p_info.get("topic")
+                        current_q = p_info.get("q_data")
+                        break
+
+            if main_topic and main_topic.endswith(" (कमजोर सवाल)"):
+                main_topic = main_topic.replace(" (कमजोर सवाल)", "")
+
+            if current_q and main_topic:
+                weak_topic_key = f"{main_topic} (कमजोर सवाल)"
                 
-                asyncio.create_task(context.bot.send_message(chat_id, f"✅ **सवाल '{main_topic}' के कमजोर बटन में जुड़ गया!**", parse_mode="Markdown"))
+                if weak_topic_key not in DB_CACHE:
+                    DB_CACHE[weak_topic_key] = []
 
-                async def async_bg_save():
-                    try:
-                        latest_db = await get_latest_github_db()
-                        if not latest_db:
-                            latest_db = DB_CACHE
-                        if weak_topic_key not in latest_db:
-                            latest_db[weak_topic_key] = []
-                        if current_q not in latest_db[weak_topic_key]:
-                            latest_db[weak_topic_key].append(current_q)
-                        await save_to_github_safely(latest_db, f"Added Weak Question to {weak_topic_key}")
-                    except Exception as err:
-                        logger.error(f"Background Save Exception: {err}")
+                if current_q not in DB_CACHE[weak_topic_key]:
+                    DB_CACHE[weak_topic_key].append(current_q)
+                    KEYBOARD_CACHE.clear()
+                    
+                    safe_msg_topic = html.escape(main_topic)
+                    await context.bot.send_message(chat_id, f"✅ <b>सवाल '{safe_msg_topic}' के कमजोर बटन में जुड़ गया!</b>", parse_mode="HTML")
 
-                asyncio.create_task(async_bg_save())
+                    async def async_bg_save():
+                        try:
+                            latest_db = await get_latest_github_db()
+                            if not latest_db:
+                                latest_db = DB_CACHE
+                            if weak_topic_key not in latest_db:
+                                latest_db[weak_topic_key] = []
+                            if current_q not in latest_db[weak_topic_key]:
+                                latest_db[weak_topic_key].append(current_q)
+                            await save_to_github_safely(latest_db, f"Added Weak Question to {weak_topic_key}")
+                        except Exception as err:
+                            logger.error(f"Background Save Exception: {err}")
+
+                    asyncio.create_task(async_bg_save())
+                else:
+                    await context.bot.send_message(chat_id, "⚠️ <b>यह सवाल पहले से ही कमजोर लिस्ट में मौजूद है!</b>", parse_mode="HTML")
             else:
-                asyncio.create_task(context.bot.send_message(chat_id, "⚠️ **यह सवाल पहले से ही कमजोर लिस्ट में मौजूद है!**", parse_mode="Markdown"))
-        else:
-            asyncio.create_task(context.bot.send_message(chat_id, "⚠️ **मार्क हो गया! (अगला सवाल हल करें)**", parse_mode="Markdown"))
-        return
-
-    if data == "super_reset":
-        class TU:
-            def __init__(self, m): self.message = m
-        await reset_bot(TU(query.message), context)
-        return
-
-    if data.startswith("tp_"):
-        topic = data[3:]
-        if topic not in DB_CACHE or len(DB_CACHE[topic]) == 0:
-            await query.message.reply_text("❌ इस विषय में कोई सवाल नहीं हैं!")
+                await context.bot.send_message(chat_id, "⚠️ <b>मार्क हो गया! (अगला सवाल हल करें)</b>", parse_mode="HTML")
             return
 
-        total_questions = len(DB_CACHE[topic])
-        indices = list(range(total_questions))
-        random.shuffle(indices)
-
-        context.user_data.clear()
-        context.user_data.update({
-            'q_indices': indices, 
-            'idx': 0, 
-            'score': 0, 
-            'busy': True, 
-            'topic': topic, 
-            'wrong_qs': [],
-            'is_retry': False,
-            'sending_lock': False
-        })
-        asyncio.create_task(send_next_quiz(context, chat_id, user_id))
-        return
-
-    if data == "retry_wrong":
-        wrong_qs = context.user_data.get('wrong_qs', [])
-        topic = context.user_data.get('topic', 'रिवीजन')
-        if not wrong_qs:
-            await query.message.reply_text("❌ कोई गलत सवाल बाकी नहीं है!")
+        if data == "super_reset":
+            class TU:
+                def __init__(self, m): self.message = m
+            await reset_bot(TU(query.message), context)
             return
 
-        qs = list(wrong_qs)
-        random.shuffle(qs)
-        context.user_data.clear()
-        context.user_data.update({
-            'wrong_qs_pool': qs, 
-            'idx': 0, 
-            'score': 0, 
-            'busy': True, 
-            'topic': f"{topic} (गलत सवाल)", 
-            'wrong_qs': [],
-            'is_retry': True,
-            'sending_lock': False
-        })
-        asyncio.create_task(send_next_quiz(context, chat_id, user_id))
-        return
+        if data.startswith("tp_"):
+            topic = data[3:]
+            if topic not in DB_CACHE or len(DB_CACHE[topic]) == 0:
+                await query.message.reply_text("❌ इस विषय में कोई सवाल नहीं हैं!")
+                return
+
+            total_questions = len(DB_CACHE[topic])
+            indices = list(range(total_questions))
+            random.shuffle(indices)
+
+            context.user_data.clear()
+            context.user_data.update({
+                'q_indices': indices, 
+                'idx': 0, 
+                'score': 0, 
+                'busy': True, 
+                'topic': topic, 
+                'wrong_qs': [],
+                'is_retry': False,
+                'sending_lock': False
+            })
+            asyncio.create_task(send_next_quiz(context, chat_id, user_id))
+            return
+
+        if data == "retry_wrong":
+            wrong_qs = context.user_data.get('wrong_qs', [])
+            topic = context.user_data.get('topic', 'रिवीजन')
+            if not wrong_qs:
+                await query.message.reply_text("❌ कोई गलत सवाल बाकी नहीं है!")
+                return
+
+            qs = list(wrong_qs)
+            random.shuffle(qs)
+            context.user_data.clear()
+            context.user_data.update({
+                'wrong_qs_pool': qs, 
+                'idx': 0, 
+                'score': 0, 
+                'busy': True, 
+                'topic': f"{topic} (गलत सवाल)", 
+                'wrong_qs': [],
+                'is_retry': True,
+                'sending_lock': False
+            })
+            asyncio.create_task(send_next_quiz(context, chat_id, user_id))
+            return
+
+    except Exception as err:
+        logger.error(f"Callback Query Handling Error: {err}")
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
@@ -681,7 +710,8 @@ def main():
         port=p,
         url_path=TOKEN,
         webhook_url=f"{RENDER_URL}/{TOKEN}",
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        allowed_updates=["message", "callback_query", "poll_answer"]
     )
 
 if __name__ == '__main__':
